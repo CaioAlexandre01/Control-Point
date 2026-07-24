@@ -2,11 +2,11 @@
 
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 import { doc, getDoc, Timestamp } from "firebase/firestore";
-import { CheckCircle2, Clock3, LoaderCircle, MapPin, QrCode, ScanLine } from "lucide-react";
+import { CheckCircle2, LoaderCircle, MapPin, QrCode, ScanLine } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
-import { Alert, Badge, Button, Card, Modal } from "@/components/ui";
+import { Alert, Button, Card, Modal } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
 import { brTime, haversine } from "@/lib/utils";
@@ -20,11 +20,24 @@ const actionLabels: Record<EventType, string> = {
   clock_out: "saída",
 };
 
-const stateLabels = {
-  working: "Trabalhando",
-  on_break: "Em intervalo",
-  finished: "Jornada encerrada",
-};
+type PunchField = "clockInAt" | "breakStartAt" | "breakEndAt" | "clockOutAt";
+
+const punchLabels: Array<{ field: PunchField; label: string }> = [
+  { field: "clockInAt", label: "Entrada" },
+  { field: "breakStartAt", label: "Intervalo" },
+  { field: "breakEndAt", label: "Retorno" },
+  { field: "clockOutAt", label: "Saída" },
+];
+
+function punchTime(value?: Timestamp) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(value.toDate());
+}
 
 export default function Ponto() {
   return <Protected role="employee"><PontoContent /></Protected>;
@@ -218,39 +231,33 @@ function PontoContent() {
     }
   }
 
-  const currentState = workday?.status
-    ? stateLabels[workday.status]
-    : "Jornada não iniciada";
-
   return (
     <AppShell title="Registrar ponto">
-      <div className="ponto-focus">
-        <Card className="current-state">
-          <span className="eyebrow">Estado atual</span>
-          <div>
-            <span className="state-icon"><Clock3 /></span>
-            <div><h2>{currentState}</h2><p>{next ? `Próxima ação: ${actionLabels[next]}` : "Todos os registros do dia foram concluídos."}</p></div>
-            <Badge tone={workday?.status === "finished" ? "success" : workday?.status === "on_break" ? "warning" : "neutral"}>
-              {workday?.status === "finished" ? "Concluído" : "Hoje"}
-            </Badge>
-          </div>
-        </Card>
-
-        {feedback && (
-          <Alert tone={feedback.error ? "error" : "success"}>
-            <span className="feedback-line">
-              {!feedback.error && <CheckCircle2 size={18} />}
-              {feedback.text}
-              {officialTime && <small>Horário oficial do Firestore</small>}
+      <div className="employee-punch-page">
+        <Card className="mobile-punch-card">
+          <div className="mobile-punch-heading">
+            <div className="scanner-head">
+              <ScanLine />
+              <div>
+                <small>PRÓXIMA AÇÃO</small>
+                <h2>{next ? actionLabels[next] : "Jornada concluída"}</h2>
+              </div>
+            </div>
+            <span className={`work-state ${workday?.status ?? "not-started"}`}>
+              {workday?.status === "on_break" ? "Intervalo" : workday?.status === "finished" ? "Concluído" : workday?.status === "working" ? "Trabalhando" : "Não iniciada"}
             </span>
-          </Alert>
-        )}
-
-        <Card className="scanner-card">
-          <div className="scanner-head">
-            <ScanLine />
-            <div><h3>Leitura do QR Code</h3><p>Leia novamente antes de cada registro.</p></div>
           </div>
+
+          {feedback && (
+            <Alert tone={feedback.error ? "error" : "success"}>
+              <span className="feedback-line">
+                {!feedback.error && <CheckCircle2 size={18} />}
+                {feedback.text}
+                {officialTime && <small>Horário oficial</small>}
+              </span>
+            </Alert>
+          )}
+
           <div className={`qr-reader-shell ${scanning ? "active" : ""}`}>
             <div id="qr-reader" />
             {validatingQr && (
@@ -271,19 +278,34 @@ function PontoContent() {
             <span><QrCode />{validation ? "QR válido" : "QR pendente"}</span>
             <span><MapPin />{validation ? `${Math.round(validation.distanceMeters)} m · precisão ${Math.round(validation.accuracy)} m` : "Localização pendente"}</span>
           </div>
-          <Button onClick={startCamera} disabled={scanning || validatingQr || !next}>
+          <Button className={validation ? "secondary camera-button" : "camera-button"} onClick={startCamera} disabled={scanning || validatingQr || !next}>
             {validatingQr ? <><LoaderCircle className="spin" />Validando...</> : scanning ? "Câmera ativa" : validation ? "Ler novamente" : "Abrir câmera"}
           </Button>
+          <div ref={nextActionRef} className="mobile-next-action">
+            <Button onClick={() => setConfirming(true)} disabled={!validation || !next}>
+              {next ? `Confirmar ${actionLabels[next]}` : "Jornada concluída"}
+            </Button>
+          </div>
         </Card>
 
-        <div ref={nextActionRef}>
-          <Card className="next-action">
-            <div><span className="eyebrow">Próxima ação</span><h2>{next ? actionLabels[next] : "Jornada concluída"}</h2></div>
-            <Button onClick={() => setConfirming(true)} disabled={!validation || !next}>
-              {next ? `Confirmar ${actionLabels[next]}` : "Sem ações disponíveis"}
-            </Button>
-          </Card>
-        </div>
+        <Card className="today-punches">
+          <div className="today-punches-title">
+            <h3>Batidas de hoje</h3>
+            <span>{workday?.date ? workday.date.split("-").reverse().join("/") : new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo" }).format(new Date())}</span>
+          </div>
+          <div className="punch-mini-table">
+            {punchLabels.map(({ field, label }) => {
+              const value = workday?.[field];
+              return (
+                <div key={field} className={value ? "registered" : ""}>
+                  <span>{label}</span>
+                  <strong>{punchTime(value)}</strong>
+                  <small>{value ? "Registrado" : "Pendente"}</small>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
       </div>
 
       <Modal

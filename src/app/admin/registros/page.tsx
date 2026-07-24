@@ -5,10 +5,10 @@ import { Pencil } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
-import { Alert, Badge, Button, Card, DataTable, Empty, Field, Loading, Modal } from "@/components/ui";
+import { Alert, Button, Card, DataTable, Empty, Field, Loading, Modal } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
-import { companyUsers, companyWorkdays, minutesText } from "@/lib/queries";
+import { companyUsers, companyWorkdays } from "@/lib/queries";
 import { randomToken } from "@/lib/utils";
 import type { AppUser, Workday } from "@/types";
 
@@ -18,6 +18,26 @@ interface AuditLog {
   reason: string;
   workdayId: string;
   createdAt?: Timestamp;
+}
+
+const DAILY_TARGET_MINUTES = 8 * 60;
+
+function timeText(value?: Timestamp) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(value.toDate());
+}
+
+function balanceText(workday: Workday) {
+  if (workday.status !== "finished" || !workday.clockOutAt) return "—";
+  const balance = (workday.totalWorkedMinutes || 0) - DAILY_TARGET_MINUTES;
+  const sign = balance >= 0 ? "+" : "−";
+  const absolute = Math.abs(balance);
+  return `${sign}${Math.floor(absolute / 60)}h ${String(absolute % 60).padStart(2, "0")}min`;
 }
 
 export default function Records() {
@@ -95,22 +115,33 @@ function RecordsContent() {
     <AppShell title="Registros">
       <div className="stack">
       <Card>
-        <div className="section-title"><h2>Registros de ponto</h2></div>
+        <div className="section-title">
+          <div>
+            <h2>Registros de ponto</h2>
+            <p className="table-note">Jornada-base: 8h trabalhadas + 1h de intervalo.</p>
+          </div>
+        </div>
         {!rows || !users ? <Loading /> : rows.length === 0
           ? <Empty title="Nenhum registro" description="As jornadas da empresa aparecerão aqui." />
           : (
-            <DataTable headers={["Funcionário", "Data", "Status", "Trabalhado", "Intervalo", ""]}>
+            <div className="records-table">
+            <DataTable headers={["Funcionário", "Data", "Entrada", "Intervalo ida", "Intervalo volta", "Saída", "Saldo 8h", ""]}>
               {rows.map((row) => (
                 <tr key={row.id}>
                   <td>{users.find((user) => user.uid === row.userId)?.name ?? "—"}</td>
                   <td>{row.date.split("-").reverse().join("/")}</td>
-                  <td><Badge tone={row.status === "finished" ? "success" : "warning"}>{row.status === "finished" ? "Encerrado" : row.status === "on_break" ? "Intervalo" : "Trabalhando"}</Badge></td>
-                  <td>{minutesText(row.totalWorkedMinutes)}</td>
-                  <td>{minutesText(row.totalBreakMinutes)}</td>
+                  <td className="time-cell">{timeText(row.clockInAt)}</td>
+                  <td className="time-cell">{timeText(row.breakStartAt)}</td>
+                  <td className="time-cell">{timeText(row.breakEndAt)}</td>
+                  <td className="time-cell">{timeText(row.clockOutAt)}</td>
+                  <td className={row.status === "finished" && row.totalWorkedMinutes >= DAILY_TARGET_MINUTES ? "balance positive" : row.status === "finished" ? "balance negative" : "balance"}>
+                    {balanceText(row)}
+                  </td>
                   <td><button className="icon-button" onClick={() => { setSelected(row); setMinutes(row.totalWorkedMinutes); setError(""); }} aria-label="Corrigir registro"><Pencil /></button></td>
                 </tr>
               ))}
             </DataTable>
+            </div>
           )}
       </Card>
       <Card>
