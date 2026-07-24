@@ -1,0 +1,177 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+    function me() {
+      return get(userPath(request.auth.uid));
+    }
+    function isActive() {
+      return signedIn() && exists(userPath(request.auth.uid)) && me().data.active == true;
+    }
+    function isAdmin() {
+      return isActive() && me().data.role == "admin";
+    }
+    function sameCompany(companyId) {
+      return isActive() && me().data.companyId == companyId;
+    }
+    function setupOpen() {
+      return !exists(/databases/$(database)/documents/system/config);
+    }
+    function onlyChanges(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+
+    match /system/config {
+      allow get: if true;
+      allow list: if false;
+      allow create: if setupOpen()
+        && signedIn()
+        && request.resource.data.initialized == true
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /companies/{companyId} {
+      allow read: if sameCompany(companyId);
+      allow create: if setupOpen()
+        && signedIn()
+        && request.resource.data.active == true
+        && request.resource.data.createdAt == request.time;
+      allow update: if isAdmin()
+        && sameCompany(companyId)
+        && onlyChanges(["name", "document", "active", "qrCodeId", "latitude", "longitude", "radiusMeters", "updatedAt"])
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /users/{uid} {
+      allow get: if signedIn() && (
+        request.auth.uid == uid ||
+        (isAdmin() && resource.data.companyId == me().data.companyId)
+      );
+      allow list: if isAdmin() && resource.data.companyId == me().data.companyId;
+
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.active == true
+        && request.resource.data.createdAt == request.time
+        && (
+          (
+            setupOpen()
+            && request.resource.data.role == "admin"
+          )
+          ||
+          (
+            request.resource.data.role == "employee"
+            && request.resource.data.email == request.auth.token.email
+            && request.resource.data.inviteId is string
+            && exists(/databases/$(database)/documents/invites/$(request.resource.data.inviteId))
+            && get(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.email == request.resource.data.email
+            && get(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.companyId == request.resource.data.companyId
+            && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.used == true
+            && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.usedBy == uid
+          )
+        );
+
+      allow update: if (
+        isAdmin()
+        && resource.data.companyId == me().data.companyId
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.role == resource.data.role
+        && onlyChanges(["name", "email", "active", "updatedAt"])
+      ) || (
+        signedIn()
+        && request.auth.uid == uid
+        && onlyChanges(["name", "updatedAt"])
+      );
+      allow delete: if false;
+    }
+
+    match /invites/{inviteId} {
+      allow get: if (
+        resource.data.active == true
+        && resource.data.used == false
+      ) || (
+        isAdmin() && resource.data.companyId == me().data.companyId
+      );
+      allow list: if isAdmin() && resource.data.companyId == me().data.companyId;
+      allow create: if isAdmin()
+        && request.resource.data.companyId == me().data.companyId
+        && request.resource.data.role == "employee"
+        && request.resource.data.token == inviteId
+        && request.resource.data.active == true
+        && request.resource.data.used == false
+        && request.resource.data.createdAt == request.time;
+      allow update: if (
+        isAdmin()
+        && resource.data.companyId == me().data.companyId
+        && request.resource.data.companyId == resource.data.companyId
+        && onlyChanges(["active", "canceledAt", "canceledBy"])
+      ) || (
+        signedIn()
+        && resource.data.active == true
+        && resource.data.used == false
+        && resource.data.email == request.auth.token.email
+        && resource.data.expiresAt > request.time
+        && onlyChanges(["active", "used", "usedAt", "usedBy"])
+        && request.resource.data.active == false
+        && request.resource.data.used == true
+        && request.resource.data.usedAt == request.time
+        && request.resource.data.usedBy == request.auth.uid
+      );
+      allow delete: if false;
+    }
+
+    match /workdays/{workdayId} {
+      allow get, list: if isActive() && (
+        resource.data.userId == request.auth.uid
+        || (isAdmin() && resource.data.companyId == me().data.companyId)
+      );
+
+      // Employees register only through the authenticated Cloud Function.
+      // The Admin SDK revalidates user, company, QR, GPS and sequence.
+      allow create: if false;
+
+      allow update: if isAdmin()
+        && resource.data.companyId == me().data.companyId
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.correctionAuditId is string
+        && getAfter(/databases/$(database)/documents/auditLogs/$(request.resource.data.correctionAuditId)).data.workdayId == workdayId
+        && getAfter(/databases/$(database)/documents/auditLogs/$(request.resource.data.correctionAuditId)).data.adminId == request.auth.uid;
+      allow delete: if false;
+
+      match /events/{eventId} {
+        allow read: if isActive() && (
+          get(/databases/$(database)/documents/workdays/$(workdayId)).data.userId == request.auth.uid
+          || (
+            isAdmin()
+            && get(/databases/$(database)/documents/workdays/$(workdayId)).data.companyId == me().data.companyId
+          )
+        );
+        allow create: if false;
+        allow update, delete: if false;
+      }
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isAdmin() && resource.data.companyId == me().data.companyId;
+      allow create: if isAdmin()
+        && request.resource.data.companyId == me().data.companyId
+        && request.resource.data.adminId == request.auth.uid
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 5
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

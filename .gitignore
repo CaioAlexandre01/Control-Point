@@ -1,0 +1,16 @@
+node_modules/
+functions/node_modules/
+.next/
+out/
+dist/
+
+.env
+.env.local
+.env.production
+.env.development
+
+!.env.example
+
+firebase-debug.log
+*.log
+.DS_Store
