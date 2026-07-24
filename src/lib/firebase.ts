@@ -1,7 +1,6 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
-import { getFunctions, type Functions } from "firebase/functions";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -33,7 +32,4 @@ const app = isFirebaseConfigured
 
 export const auth = (app ? getAuth(app) : null) as Auth;
 export const db = (app ? getFirestore(app) : null) as Firestore;
-export const functions = (app
-  ? getFunctions(app, process.env.NEXT_PUBLIC_FIREBASE_FUNCTIONS_REGION || "southamerica-east1")
-  : null) as Functions;
 // Analytics is intentionally not initialized here; this module also runs during SSR.

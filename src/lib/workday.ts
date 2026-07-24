@@ -1,6 +1,5 @@
 import { doc, getDoc, Timestamp } from "firebase/firestore";
-import { httpsCallable } from "firebase/functions";
-import { db, functions } from "./firebase";
+import { auth, db } from "./firebase";
 import { saoPauloDate } from "./utils";
 import type { EventType, Validation, Workday } from "@/types";
 
@@ -16,6 +15,7 @@ export function nextEvent(workday?: Workday): EventType | null {
 
 interface RegisterPunchResponse {
   officialTimestampMillis: number;
+  error?: string;
 }
 
 export async function registerPunch(
@@ -30,32 +30,51 @@ export async function registerPunch(
   if (Date.now() - validation.validatedAt > 120_000) {
     throw new Error("A validação expirou. Leia o QR Code novamente.");
   }
+  if (!auth.currentUser || auth.currentUser.uid !== userId) {
+    throw new Error("Sua sessão expirou. Faça login novamente.");
+  }
 
-  const call = httpsCallable<{
-    companyId: string;
-    type: EventType;
-    qrCodeId: string;
-    latitude: number;
-    longitude: number;
-    accuracy: number;
-    clientTimestamp: number;
-    userAgent: string;
-  }, RegisterPunchResponse>(functions, "registerPunch");
-
-  const response = await call({
-    companyId,
-    type,
-    qrCodeId: validation.qrCodeId,
-    latitude: validation.latitude,
-    longitude: validation.longitude,
-    accuracy: validation.accuracy,
-    clientTimestamp: Date.now(),
-    userAgent: navigator.userAgent,
+  const idToken = await auth.currentUser.getIdToken();
+  const response = await fetch("/api/ponto/registrar", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({
+      companyId,
+      type,
+      qrCodeId: validation.qrCodeId,
+      latitude: validation.latitude,
+      longitude: validation.longitude,
+      accuracy: validation.accuracy,
+      clientTimestamp: Date.now(),
+      userAgent: navigator.userAgent,
+    }),
   });
+
+  let result: RegisterPunchResponse;
+  try {
+    result = await response.json() as RegisterPunchResponse;
+  } catch {
+    throw new Error("O servidor retornou uma resposta inválida.");
+  }
+  if (!response.ok) {
+    if (response.status === 401) {
+      await auth.currentUser?.getIdToken(true).catch(() => undefined);
+    }
+    throw new Error(result.error || "Não foi possível registrar o ponto.");
+  }
+  if (!Number.isFinite(result.officialTimestampMillis)) {
+    throw new Error("O servidor não retornou o horário oficial.");
+  }
+
   const workday = await getWorkday(userId, companyId);
-  if (!workday) throw new Error("O registro foi salvo, mas a jornada não pôde ser carregada.");
+  if (!workday) {
+    throw new Error("O registro foi salvo, mas a jornada não pôde ser carregada.");
+  }
   return {
-    officialTimestamp: Timestamp.fromMillis(response.data.officialTimestampMillis),
+    officialTimestamp: Timestamp.fromMillis(result.officialTimestampMillis),
     workday,
   };
 }
