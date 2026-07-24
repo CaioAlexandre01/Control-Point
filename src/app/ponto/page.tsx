@@ -2,7 +2,7 @@
 
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 import { doc, getDoc, Timestamp } from "firebase/firestore";
-import { CheckCircle2, Clock3, MapPin, QrCode, ScanLine } from "lucide-react";
+import { CheckCircle2, Clock3, LoaderCircle, MapPin, QrCode, ScanLine } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
@@ -37,10 +37,12 @@ function PontoContent() {
   const [feedback, setFeedback] = useState<{ text: string; error?: boolean }>();
   const [officialTime, setOfficialTime] = useState<Timestamp>();
   const [scanning, setScanning] = useState(false);
+  const [validatingQr, setValidatingQr] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
   const scanner = useRef<Html5Qrcode | null>(null);
   const validating = useRef(false);
+  const nextActionRef = useRef<HTMLDivElement | null>(null);
   const next = nextEvent(workday);
 
   const load = useCallback(async () => {
@@ -52,6 +54,7 @@ function PontoContent() {
     const instance = scanner.current;
     scanner.current = null;
     validating.current = false;
+    setScanning(false);
     if (!instance) return;
     try {
       const state = instance.getState();
@@ -65,7 +68,6 @@ function PontoContent() {
     } catch {
       // The camera may already have been released by the browser.
     }
-    setScanning(false);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -74,52 +76,82 @@ function PontoContent() {
   async function validateCode(rawValue: string) {
     if (validating.current) return;
     validating.current = true;
+    setValidatingQr(true);
+    setFeedback({ text: "QR Code reconhecido. Validando localização..." });
+    console.info("[Ponto] QR reconhecido");
+
     try {
-      const url = new URL(rawValue);
-      const companyId = url.pathname.replace(/^\/+/, "");
-      const qrCodeId = url.searchParams.get("code");
-      if (url.protocol !== "pontoqr:" || url.hostname !== "empresa" || !companyId || !qrCodeId) {
-        throw new Error("QR Code inválido.");
-      }
-      if (!profile || companyId !== profile.companyId) {
-        throw new Error("Este QR Code pertence a outra empresa.");
-      }
+      scanner.current?.pause(true);
+    } catch {
+      // A leitura já pode estar pausada no momento do callback.
+    }
 
-      const companySnapshot = await getDoc(doc(db, "companies", companyId));
-      if (!companySnapshot.exists()) throw new Error("Empresa não encontrada.");
-      const company = { id: companySnapshot.id, ...companySnapshot.data() } as Company;
-      if (!company.active) throw new Error("Esta empresa está inativa.");
-      if (company.qrCodeId !== qrCodeId) throw new Error("QR Code antigo ou inválido.");
-      if (!navigator.geolocation) throw new Error("Este navegador não oferece localização.");
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const validationResult = await Promise.race([
+        (async () => {
+          const url = new URL(rawValue);
+          const companyId = url.pathname.replace(/^\/+/, "");
+          const qrCodeId = url.searchParams.get("code");
+          if (url.protocol !== "pontoqr:" || url.hostname !== "empresa" || !companyId || !qrCodeId) {
+            throw new Error("QR Code inválido.");
+          }
+          if (!profile || companyId !== profile.companyId) {
+            throw new Error("Este QR Code pertence a outra empresa.");
+          }
 
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 15_000,
-          maximumAge: 0,
-        });
-      });
-      const { latitude, longitude, accuracy } = position.coords;
-      const distanceMeters = haversine(latitude, longitude, company.latitude, company.longitude);
+          const companySnapshot = await getDoc(doc(db, "companies", companyId));
+          if (!companySnapshot.exists()) throw new Error("Empresa não encontrada.");
+          const company = { id: companySnapshot.id, ...companySnapshot.data() } as Company;
+          console.info("[Ponto] Empresa carregada", { companyId: company.id });
+          if (!company.active) throw new Error("Esta empresa está inativa.");
+          if (company.qrCodeId !== qrCodeId) throw new Error("QR Code antigo ou inválido.");
+          if (!navigator.geolocation) throw new Error("Este navegador não oferece localização.");
 
-      // The uncertainty is included to avoid accepting a location whose
-      // accuracy circle extends beyond the configured perimeter.
-      if (distanceMeters + accuracy > company.radiusMeters) {
-        throw new Error(`Fora do local permitido. Distância: ${Math.round(distanceMeters)} m.`);
-      }
+          console.info("[Ponto] GPS solicitado");
+          const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: true,
+              timeout: 15_000,
+              maximumAge: 0,
+            });
+          });
+          const { latitude, longitude, accuracy } = position.coords;
+          console.info("[Ponto] GPS recebido", { latitude, longitude, accuracy });
+          const distanceMeters = haversine(latitude, longitude, company.latitude, company.longitude);
+          console.info("[Ponto] Distância calculada", { distanceMeters, accuracy, radiusMeters: company.radiusMeters });
 
-      setValidation({
-        company,
-        latitude,
-        longitude,
-        accuracy,
-        distanceMeters,
-        qrCodeId,
-        validatedAt: Date.now(),
-      });
+          if (distanceMeters + accuracy > company.radiusMeters) {
+            throw new Error(`Fora do local permitido. Distância: ${Math.round(distanceMeters)} m.`);
+          }
+
+          return {
+            company,
+            latitude,
+            longitude,
+            accuracy,
+            distanceMeters,
+            qrCodeId,
+            validatedAt: Date.now(),
+          } satisfies Validation;
+        })(),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error("A validação excedeu 20 segundos. Tente novamente.")),
+            20_000,
+          );
+        }),
+      ]);
+
+      setValidation(validationResult);
       setOfficialTime(undefined);
-      setFeedback({ text: "QR Code e localização validados." });
       await stopCamera();
+      console.info("[Ponto] Validação concluída");
+      setFeedback({ text: "QR Code e localização validados" });
+      requestAnimationFrame(() => {
+        nextActionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+        setConfirming(true);
+      });
     } catch (caught) {
       const geoError = caught as GeolocationPositionError;
       let text = caught instanceof Error ? caught.message : "Falha na validação.";
@@ -128,9 +160,13 @@ function PontoContent() {
         if (geoError.code === geoError.POSITION_UNAVAILABLE) text = "Não foi possível determinar sua localização.";
         if (geoError.code === geoError.TIMEOUT) text = "A localização demorou demais. Tente novamente.";
       }
+      await stopCamera();
       setValidation(undefined);
       setFeedback({ text, error: true });
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
       validating.current = false;
+      setValidatingQr(false);
     }
   }
 
@@ -139,6 +175,7 @@ function PontoContent() {
       await stopCamera();
       setFeedback(undefined);
       setOfficialTime(undefined);
+      setValidatingQr(false);
       setScanning(true);
       const instance = new Html5Qrcode("qr-reader");
       scanner.current = instance;
@@ -216,6 +253,13 @@ function PontoContent() {
           </div>
           <div className={`qr-reader-shell ${scanning ? "active" : ""}`}>
             <div id="qr-reader" />
+            {validatingQr && (
+              <div className="qr-validating" role="status" aria-live="polite">
+                <LoaderCircle className="spin" />
+                <strong>QR Code reconhecido</strong>
+                <span>Validando empresa e localização...</span>
+              </div>
+            )}
             {!scanning && (
               <div className="qr-placeholder">
                 <QrCode size={58} />
@@ -227,17 +271,19 @@ function PontoContent() {
             <span><QrCode />{validation ? "QR válido" : "QR pendente"}</span>
             <span><MapPin />{validation ? `${Math.round(validation.distanceMeters)} m · precisão ${Math.round(validation.accuracy)} m` : "Localização pendente"}</span>
           </div>
-          <Button onClick={startCamera} disabled={scanning || !next}>
-            {scanning ? "Câmera ativa" : validation ? "Ler novamente" : "Abrir câmera"}
+          <Button onClick={startCamera} disabled={scanning || validatingQr || !next}>
+            {validatingQr ? <><LoaderCircle className="spin" />Validando...</> : scanning ? "Câmera ativa" : validation ? "Ler novamente" : "Abrir câmera"}
           </Button>
         </Card>
 
-        <Card className="next-action">
-          <div><span className="eyebrow">Próxima ação</span><h2>{next ? actionLabels[next] : "Jornada concluída"}</h2></div>
-          <Button onClick={() => setConfirming(true)} disabled={!validation || !next}>
-            {next ? `Confirmar ${actionLabels[next]}` : "Sem ações disponíveis"}
-          </Button>
-        </Card>
+        <div ref={nextActionRef}>
+          <Card className="next-action">
+            <div><span className="eyebrow">Próxima ação</span><h2>{next ? actionLabels[next] : "Jornada concluída"}</h2></div>
+            <Button onClick={() => setConfirming(true)} disabled={!validation || !next}>
+              {next ? `Confirmar ${actionLabels[next]}` : "Sem ações disponíveis"}
+            </Button>
+          </Card>
+        </div>
       </div>
 
       <Modal

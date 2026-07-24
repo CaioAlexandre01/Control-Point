@@ -15,3 +15,7 @@
 #qr-reader video{display:block;min-height:330px;object-fit:cover}
 .qr-placeholder{position:absolute;inset:0;display:grid;place-items:center;align-content:center;gap:10px;color:#555;pointer-events:none}
 .qr-placeholder p{margin:0}
+.qr-validating{position:absolute;inset:0;z-index:3;display:grid;place-items:center;align-content:center;gap:8px;background:#0d0d0edb;backdrop-filter:blur(4px);color:var(--text)}
+.qr-validating svg{width:30px;height:30px;color:var(--pink);margin-bottom:4px}
+.qr-validating strong{font-size:15px}
+.qr-validating span{color:var(--muted);font-size:12px}
