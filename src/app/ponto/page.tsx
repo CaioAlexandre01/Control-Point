@@ -205,12 +205,9 @@ function PontoContent() {
       await instance.start(
         { facingMode: "environment" },
         {
-          fps: 15,
-          qrbox: (viewfinderWidth, viewfinderHeight) => {
-            const shortestSide = Math.min(viewfinderWidth, viewfinderHeight);
-            const size = Math.max(120, Math.min(280, Math.floor(shortestSide * 0.75)));
-            return { width: size, height: size };
-          },
+          // Scan the complete camera frame. A fixed qrbox can become misaligned
+          // with the cropped video on mobile browsers and never see the QR code.
+          fps: 12,
         },
         (decoded) => { void validateCode(decoded); },
         () => undefined,
