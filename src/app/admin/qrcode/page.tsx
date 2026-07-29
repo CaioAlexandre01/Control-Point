@@ -30,10 +30,10 @@ function QRCodeContent() {
     if (!snapshot.exists()) throw new Error("Empresa não encontrada.");
     const currentCompany = { id: snapshot.id, ...snapshot.data() } as Company;
     const qrSource = await QRCode.toDataURL(
-      `pontoqr://empresa/${currentCompany.id}?code=${currentCompany.qrCodeId}`,
+      `P:${currentCompany.qrCodeId.toUpperCase()}`,
       {
         width: 640,
-        margin: 3,
+        margin: 4,
         color: { dark: "#0D0D0E", light: "#FFFFFF" },
         errorCorrectionLevel: "H",
       },
