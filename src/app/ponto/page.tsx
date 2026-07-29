@@ -1,6 +1,10 @@
 "use client";
 
-import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
+import {
+  Html5Qrcode,
+  Html5QrcodeScannerState,
+  Html5QrcodeSupportedFormats,
+} from "html5-qrcode";
 import { doc, getDoc, Timestamp } from "firebase/firestore";
 import { CheckCircle2, LoaderCircle, MapPin, QrCode, ScanLine } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -189,18 +193,44 @@ function PontoContent() {
       setFeedback(undefined);
       setOfficialTime(undefined);
       setValidatingQr(false);
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        throw new Error("A câmera só funciona em uma conexão HTTPS segura.");
+      }
       setScanning(true);
-      const instance = new Html5Qrcode("qr-reader");
+      const instance = new Html5Qrcode("qr-reader", {
+        verbose: false,
+        formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      });
       scanner.current = instance;
       await instance.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
+        {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        {
+          fps: 15,
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const shortestSide = Math.min(viewfinderWidth, viewfinderHeight);
+            const size = Math.max(120, Math.min(280, Math.floor(shortestSide * 0.75)));
+            return { width: size, height: size };
+          },
+        },
         (decoded) => { void validateCode(decoded); },
         () => undefined,
       );
-    } catch {
+    } catch (caught) {
       await stopCamera();
-      setFeedback({ text: "Câmera bloqueada ou indisponível. Verifique a permissão.", error: true });
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setFeedback({
+        text: message.includes("HTTPS")
+          ? message
+          : /notallowed|permission|denied|negado/i.test(message)
+            ? "Câmera bloqueada. Permita o acesso à câmera nas configurações do navegador."
+            : "Não foi possível iniciar a câmera traseira. Feche outros apps que usam a câmera e tente novamente.",
+        error: true,
+      });
     }
   }
 
