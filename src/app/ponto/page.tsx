@@ -200,15 +200,10 @@ function PontoContent() {
       const instance = new Html5Qrcode("qr-reader", {
         verbose: false,
         formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
       });
       scanner.current = instance;
       await instance.start(
-        {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
+        { facingMode: "environment" },
         {
           fps: 15,
           qrbox: (viewfinderWidth, viewfinderHeight) => {
@@ -223,12 +218,13 @@ function PontoContent() {
     } catch (caught) {
       await stopCamera();
       const message = caught instanceof Error ? caught.message : String(caught);
+      console.error("[Ponto] Falha ao iniciar câmera", caught);
       setFeedback({
         text: message.includes("HTTPS")
           ? message
           : /notallowed|permission|denied|negado/i.test(message)
             ? "Câmera bloqueada. Permita o acesso à câmera nas configurações do navegador."
-            : "Não foi possível iniciar a câmera traseira. Feche outros apps que usam a câmera e tente novamente.",
+            : `Não foi possível iniciar a câmera: ${message}`,
         error: true,
       });
     }
