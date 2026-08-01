@@ -1,6 +1,7 @@
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase-admin";
+import { MAX_LOCATION_ACCURACY } from "@/lib/point-permissions";
 import type { EventType } from "@/types";
 
 export const runtime = "nodejs";
@@ -113,6 +114,12 @@ export async function POST(request: NextRequest) {
       throw new ApiError(400, "O corpo da requisição não é um JSON válido.");
     }
     const data = validateBody(requestBody);
+    if (data.accuracy > MAX_LOCATION_ACCURACY) {
+      throw new ApiError(
+        422,
+        "A localização está muito imprecisa. Ative a localização precisa do celular e tente novamente.",
+      );
+    }
     const db = getAdminDb();
     const userRef = db.doc(`users/${decodedToken.uid}`);
     const companyRef = db.doc(`companies/${data.companyId}`);

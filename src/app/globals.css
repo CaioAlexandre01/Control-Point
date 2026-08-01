@@ -14,6 +14,7 @@
 .qr-video{display:block;width:100%;min-height:330px;object-fit:cover}
 .qr-reader-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .qr-file-input{display:none}
+.permission-error{display:block;white-space:pre-line;line-height:1.5}
 .qr-placeholder{position:absolute;inset:0;display:grid;place-items:center;align-content:center;gap:10px;color:#555;pointer-events:none}
 .qr-placeholder p{margin:0}
 .qr-validating{position:absolute;inset:0;z-index:3;display:grid;place-items:center;align-content:center;gap:8px;background:#0d0d0edb;backdrop-filter:blur(4px);color:var(--text)}

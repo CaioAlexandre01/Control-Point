@@ -9,6 +9,14 @@ import { Protected } from "@/components/Protected";
 import { Alert, Button, Card, Modal } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
+import {
+  getCameraErrorMessage,
+  getGeolocationErrorMessage,
+  openDeviceCamera,
+  requestCurrentLocation,
+  validateLocationAccuracy,
+  type CurrentLocation,
+} from "@/lib/point-permissions";
 import { brTime, haversine } from "@/lib/utils";
 import { getWorkday, nextEvent, registerPunch } from "@/lib/workday";
 import type { Company, EventType, Validation, Workday } from "@/types";
@@ -63,6 +71,29 @@ async function prepareQrImage(file: File): Promise<File | HTMLCanvasElement> {
   }
 }
 
+interface RequiredLocationValidation extends CurrentLocation {
+  company: Company;
+  distanceMeters: number;
+  validatedAt: number;
+}
+
+function validateAllowedRadius(location: CurrentLocation, company: Company) {
+  const distanceMeters = haversine(
+    location.latitude,
+    location.longitude,
+    company.latitude,
+    company.longitude,
+  );
+
+  if (distanceMeters + location.accuracy > company.radiusMeters) {
+    throw new Error(
+      `Você está fora da área permitida.\n\nDistância atual: ${Math.round(distanceMeters)} metros\nLimite permitido: ${Math.round(company.radiusMeters)} metros`,
+    );
+  }
+
+  return distanceMeters;
+}
+
 export default function Ponto() {
   return <Protected role="employee"><PontoContent /></Protected>;
 }
@@ -75,11 +106,20 @@ function PontoContent() {
   const [officialTime, setOfficialTime] = useState<Timestamp>();
   const [scanning, setScanning] = useState(false);
   const [validatingQr, setValidatingQr] = useState(false);
+  const [requiredLocation, setRequiredLocation] = useState<RequiredLocationValidation>();
+  const [isRequestingLocation, setIsRequestingLocation] = useState(false);
+  const [isOpeningCamera, setIsOpeningCamera] = useState(false);
+  const [pendingAction, setPendingAction] = useState<"camera" | "photo">();
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
   const scanner = useRef<QrScanner | null>(null);
+  const cameraStream = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const requiredLocationRef = useRef<RequiredLocationValidation | null>(null);
+  const permissionFlowActive = useRef(false);
   const validating = useRef(false);
   const scanWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
   const decoderErrorShown = useRef(false);
@@ -93,29 +133,90 @@ function PontoContent() {
 
   const stopCamera = useCallback(async () => {
     const instance = scanner.current;
+    const stream = cameraStream.current;
     scanner.current = null;
+    cameraStream.current = null;
     validating.current = false;
     if (scanWatchdog.current) clearTimeout(scanWatchdog.current);
     scanWatchdog.current = null;
     setScanning(false);
-    if (!instance) return;
     try {
-      await instance.pause(true);
+      if (instance) await instance.pause(true);
     } finally {
-      instance.destroy();
+      instance?.destroy();
+      stream?.getTracks().forEach((track) => track.stop());
+      if (videoRef.current?.srcObject === stream) videoRef.current.srcObject = null;
     }
+  }, []);
+
+  const clearRequiredLocation = useCallback(() => {
+    requiredLocationRef.current = null;
+    setRequiredLocation(undefined);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => { void stopCamera(); }, [stopCamera]);
 
+  async function prepareRequiredLocation() {
+    setIsRequestingLocation(true);
+    setLocationError(null);
+    setCameraError(null);
+    setValidation(undefined);
+    clearRequiredLocation();
+    setFeedback({ text: "Verificando localização...", info: true });
+
+    try {
+      // This is intentionally the first asynchronous browser API called by the click handlers.
+      const location = await requestCurrentLocation();
+      validateLocationAccuracy(location);
+      const validatedAt = Date.now();
+
+      if (!profile) throw new Error("Seu perfil não está disponível. Entre novamente no sistema.");
+      const companySnapshot = await getDoc(doc(db, "companies", profile.companyId));
+      if (!companySnapshot.exists()) throw new Error("Empresa não encontrada.");
+      const company = { id: companySnapshot.id, ...companySnapshot.data() } as Company;
+      if (!company.active) throw new Error("Esta empresa está inativa.");
+      if (
+        !Number.isFinite(company.latitude)
+        || !Number.isFinite(company.longitude)
+        || !Number.isFinite(company.radiusMeters)
+        || company.radiusMeters <= 0
+      ) {
+        throw new Error("A localização da empresa não está configurada corretamente.");
+      }
+
+      const distanceMeters = validateAllowedRadius(location, company);
+      const result: RequiredLocationValidation = {
+        ...location,
+        company,
+        distanceMeters,
+        validatedAt,
+      };
+      requiredLocationRef.current = result;
+      setRequiredLocation(result);
+      return result;
+    } catch (caught) {
+      clearRequiredLocation();
+      setLocationError(getGeolocationErrorMessage(caught));
+      throw caught;
+    } finally {
+      setIsRequestingLocation(false);
+    }
+  }
+
   async function validateCode(rawValue: string) {
+    const locationValidation = requiredLocationRef.current;
+    if (!locationValidation) {
+      await stopCamera();
+      setLocationError("Obtenha uma localização válida antes de abrir a câmera e ler o QR Code.");
+      return;
+    }
     if (validating.current) return;
     validating.current = true;
     if (scanWatchdog.current) clearTimeout(scanWatchdog.current);
     scanWatchdog.current = null;
     setValidatingQr(true);
-    setFeedback({ text: "QR Code reconhecido. Validando localização...", info: true });
+    setFeedback({ text: "QR Code reconhecido. Validando empresa...", info: true });
     console.info("[Ponto] QR reconhecido");
 
     try {
@@ -152,41 +253,23 @@ function PontoContent() {
             throw new Error("Este QR Code pertence a outra empresa.");
           }
 
-          const companySnapshot = await getDoc(doc(db, "companies", companyId));
-          if (!companySnapshot.exists()) throw new Error("Empresa não encontrada.");
-          const company = { id: companySnapshot.id, ...companySnapshot.data() } as Company;
-          console.info("[Ponto] Empresa carregada", { companyId: company.id });
-          if (!company.active) throw new Error("Esta empresa está inativa.");
+          const { company } = locationValidation;
+          if (company.id !== companyId) throw new Error("Este QR Code pertence a outra empresa.");
           if (company.qrCodeId.toLowerCase() !== qrCodeId.toLowerCase()) {
             throw new Error("QR Code antigo ou inválido.");
           }
-          if (!navigator.geolocation) throw new Error("Este navegador não oferece localização.");
-
-          console.info("[Ponto] GPS solicitado");
-          const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-            navigator.geolocation.getCurrentPosition(resolve, reject, {
-              enableHighAccuracy: true,
-              timeout: 15_000,
-              maximumAge: 0,
-            });
-          });
-          const { latitude, longitude, accuracy } = position.coords;
-          console.info("[Ponto] GPS recebido", { latitude, longitude, accuracy });
-          const distanceMeters = haversine(latitude, longitude, company.latitude, company.longitude);
-          console.info("[Ponto] Distância calculada", { distanceMeters, accuracy, radiusMeters: company.radiusMeters });
-
-          if (distanceMeters + accuracy > company.radiusMeters) {
-            throw new Error(`Fora do local permitido. Distância: ${Math.round(distanceMeters)} m.`);
+          if (Date.now() - locationValidation.validatedAt > 120_000) {
+            throw new Error("A validação da localização expirou. Tente novamente.");
           }
 
           return {
             company,
-            latitude,
-            longitude,
-            accuracy,
-            distanceMeters,
+            latitude: locationValidation.latitude,
+            longitude: locationValidation.longitude,
+            accuracy: locationValidation.accuracy,
+            distanceMeters: locationValidation.distanceMeters,
             qrCodeId: company.qrCodeId,
-            validatedAt: Date.now(),
+            validatedAt: locationValidation.validatedAt,
           } satisfies Validation;
         })(),
         new Promise<never>((_, reject) => {
@@ -207,16 +290,13 @@ function PontoContent() {
         setConfirming(true);
       });
     } catch (caught) {
-      const geoError = caught as GeolocationPositionError;
-      let text = caught instanceof Error ? caught.message : "Falha na validação.";
-      if (typeof geoError?.code === "number") {
-        if (geoError.code === geoError.PERMISSION_DENIED) text = "Localização bloqueada. Permita o acesso ao GPS.";
-        if (geoError.code === geoError.POSITION_UNAVAILABLE) text = "Não foi possível determinar sua localização.";
-        if (geoError.code === geoError.TIMEOUT) text = "A localização demorou demais. Tente novamente.";
-      }
       await stopCamera();
+      clearRequiredLocation();
       setValidation(undefined);
-      setFeedback({ text, error: true });
+      setFeedback({
+        text: caught instanceof Error ? caught.message : "Falha na validação do QR Code.",
+        error: true,
+      });
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
       validating.current = false;
@@ -224,75 +304,129 @@ function PontoContent() {
     }
   }
 
-  async function startCamera() {
-    try {
-      await stopCamera();
-      setFeedback(undefined);
-      setOfficialTime(undefined);
-      setValidatingQr(false);
-      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-        throw new Error("A câmera só funciona em uma conexão HTTPS segura.");
-      }
-      const video = videoRef.current;
-      if (!video) throw new Error("O leitor da câmera não está disponível.");
+  async function startQrScanner() {
+    const video = videoRef.current;
+    if (!video) throw new Error("O leitor da câmera não está disponível.");
 
-      decoderErrorShown.current = false;
-      setScanning(true);
-      const instance = new QrScanner(video, (result) => {
-        void validateCode(result.data);
-      }, {
-        onDecodeError: (caught) => {
-          if (caught === QrScanner.NO_QR_CODE_FOUND) return;
-          console.error("[Ponto] Falha no detector de QR Code", caught);
-          if (decoderErrorShown.current) return;
-          decoderErrorShown.current = true;
-          setFeedback({
-            text: "A leitura contínua encontrou um problema. Use “Ler por foto” para continuar.",
-            error: true,
-          });
-        },
-        preferredCamera: "environment",
-        maxScansPerSecond: 12,
-        highlightScanRegion: true,
-        highlightCodeOutline: true,
-        returnDetailedScanResult: true,
-        calculateScanRegion: (cameraVideo) => {
-          const width = cameraVideo.videoWidth;
-          const height = cameraVideo.videoHeight;
-          const scale = Math.min(1, 960 / Math.max(width, height));
-          return {
-            x: 0,
-            y: 0,
-            width,
-            height,
-            downScaledWidth: Math.round(width * scale),
-            downScaledHeight: Math.round(height * scale),
-          };
-        },
-      });
-      scanner.current = instance;
-      await instance.start();
-      if (scanner.current === instance) {
-        scanWatchdog.current = setTimeout(() => {
-          if (scanner.current !== instance || validating.current) return;
-          setFeedback({
-            text: "Ainda não reconheceu? Use “Ler por foto” para uma leitura imediata.",
-            info: true,
-          });
-        }, 8_000);
-      }
+    const stream = await openDeviceCamera();
+    cameraStream.current = stream;
+    video.srcObject = stream;
+    decoderErrorShown.current = false;
+
+    const instance = new QrScanner(video, (result) => {
+      void validateCode(result.data);
+    }, {
+      onDecodeError: (caught) => {
+        if (caught === QrScanner.NO_QR_CODE_FOUND) return;
+        console.error("[Ponto] Falha no detector de QR Code", caught);
+        if (decoderErrorShown.current) return;
+        decoderErrorShown.current = true;
+        setFeedback({
+          text: "A leitura contínua encontrou um problema. Use “Ler por foto” para continuar.",
+          error: true,
+        });
+      },
+      preferredCamera: "environment",
+      maxScansPerSecond: 12,
+      highlightScanRegion: true,
+      highlightCodeOutline: true,
+      returnDetailedScanResult: true,
+      calculateScanRegion: (cameraVideo) => {
+        const width = cameraVideo.videoWidth;
+        const height = cameraVideo.videoHeight;
+        const scale = Math.min(1, 960 / Math.max(width, height));
+        return {
+          x: 0,
+          y: 0,
+          width,
+          height,
+          downScaledWidth: Math.round(width * scale),
+          downScaledHeight: Math.round(height * scale),
+        };
+      },
+    });
+    scanner.current = instance;
+    setScanning(true);
+    await instance.start();
+
+    if (scanner.current === instance) {
+      scanWatchdog.current = setTimeout(() => {
+        if (scanner.current !== instance || validating.current) return;
+        setFeedback({
+          text: "Ainda não reconheceu? Use “Ler por foto” para uma leitura imediata.",
+          info: true,
+        });
+      }, 8_000);
+    }
+  }
+
+  async function handleOpenCamera() {
+    if (!next || scanning || validatingQr || permissionFlowActive.current) return;
+    permissionFlowActive.current = true;
+    setPendingAction("camera");
+    setOfficialTime(undefined);
+    setValidatingQr(false);
+
+    let locationIsValid = false;
+    try {
+      await prepareRequiredLocation();
+      locationIsValid = true;
+      setIsOpeningCamera(true);
+      setFeedback({ text: "Abrindo câmera...", info: true });
+      await stopCamera();
+      await startQrScanner();
+      setFeedback({ text: "Localização validada. Câmera liberada." });
     } catch (caught) {
       await stopCamera();
-      const message = caught instanceof Error ? caught.message : String(caught);
-      console.error("[Ponto] Falha ao iniciar câmera", caught);
-      setFeedback({
-        text: message.includes("HTTPS")
-          ? message
-          : /notallowed|permission|denied|negado/i.test(message)
-            ? "Câmera bloqueada. Permita o acesso à câmera nas configurações do navegador."
-            : `Não foi possível iniciar a câmera: ${message}`,
-        error: true,
+      setFeedback(undefined);
+      if (locationIsValid) {
+        clearRequiredLocation();
+        console.error("[Ponto] Falha ao iniciar câmera", caught);
+        setCameraError(getCameraErrorMessage(caught));
+      }
+    } finally {
+      setIsOpeningCamera(false);
+      setPendingAction(undefined);
+      permissionFlowActive.current = false;
+    }
+  }
+
+  async function handleReadPhoto() {
+    if (!next || validatingQr || permissionFlowActive.current) return;
+
+    const currentLocation = requiredLocationRef.current;
+    if (currentLocation && Date.now() - currentLocation.validatedAt <= 120_000 && !validation) {
+      setCameraError(null);
+      setLocationError(null);
+      void stopCamera().catch((caught) => {
+        console.error("[Ponto] Falha ao encerrar câmera antes da foto", caught);
       });
+      const input = fileInputRef.current;
+      if (!input) {
+        clearRequiredLocation();
+        setCameraError("O leitor de foto não está disponível.");
+        return;
+      }
+      setFeedback({ text: "Localização validada. Selecione ou tire uma foto do QR Code." });
+      input.click();
+      return;
+    }
+
+    permissionFlowActive.current = true;
+    setPendingAction("photo");
+    setOfficialTime(undefined);
+    setValidatingQr(false);
+
+    try {
+      await prepareRequiredLocation();
+      await stopCamera();
+      setFeedback({ text: "Localização validada. Toque novamente em “Abrir foto” para continuar." });
+    } catch {
+      await stopCamera();
+      setFeedback(undefined);
+    } finally {
+      setPendingAction(undefined);
+      permissionFlowActive.current = false;
     }
   }
 
@@ -309,6 +443,7 @@ function PontoContent() {
       await validateCode(result.data);
     } catch (caught) {
       setValidatingQr(false);
+      clearRequiredLocation();
       setFeedback({
         text: caught instanceof Error && caught.message !== QrScanner.NO_QR_CODE_FOUND
           ? `Não foi possível ler a foto: ${caught.message}`
@@ -325,6 +460,7 @@ function PontoContent() {
       const result = await registerPunch(profile.uid, profile.companyId, next, validation);
       setWorkday(result.workday);
       setValidation(undefined);
+      clearRequiredLocation();
       setConfirming(false);
       setOfficialTime(result.officialTimestamp);
       setFeedback({
@@ -334,6 +470,7 @@ function PontoContent() {
       });
     } catch (caught) {
       setValidation(undefined);
+      clearRequiredLocation();
       setConfirming(false);
       setFeedback({
         text: caught instanceof Error ? caught.message : "Não foi possível registrar.",
@@ -344,6 +481,9 @@ function PontoContent() {
       setSaving(false);
     }
   }
+
+  const visibleLocation = validation ?? requiredLocation;
+  const permissionFlowBusy = isRequestingLocation || isOpeningCamera;
 
   return (
     <AppShell title="Registrar ponto">
@@ -371,6 +511,16 @@ function PontoContent() {
               </span>
             </Alert>
           )}
+          {locationError && (
+            <Alert tone="error">
+              <span className="permission-error" role="alert">{locationError}</span>
+            </Alert>
+          )}
+          {cameraError && (
+            <Alert tone="error">
+              <span className="permission-error" role="alert">{cameraError}</span>
+            </Alert>
+          )}
 
           <div className={`qr-reader-shell ${scanning ? "active" : ""}`}>
             <video ref={videoRef} className="qr-video" muted playsInline />
@@ -378,7 +528,7 @@ function PontoContent() {
               <div className="qr-validating" role="status" aria-live="polite">
                 <LoaderCircle className="spin" />
                 <strong>QR Code reconhecido</strong>
-                <span>Validando empresa e localização...</span>
+                <span>Validando empresa e QR Code...</span>
               </div>
             )}
             {!scanning && (
@@ -390,21 +540,30 @@ function PontoContent() {
           </div>
           <div className="scan-status">
             <span><QrCode />{validation ? "QR válido" : "QR pendente"}</span>
-            <span><MapPin />{validation ? `${Math.round(validation.distanceMeters)} m · precisão ${Math.round(validation.accuracy)} m` : "Localização pendente"}</span>
+            <span><MapPin />{visibleLocation ? `${Math.round(visibleLocation.distanceMeters)} m · precisão ${Math.round(visibleLocation.accuracy)} m` : "Localização pendente"}</span>
           </div>
           <div className="qr-reader-actions">
-            <Button className={validation ? "secondary camera-button" : "camera-button"} onClick={startCamera} disabled={scanning || validatingQr || !next}>
-              {validatingQr ? <><LoaderCircle className="spin" />Validando...</> : scanning ? "Câmera ativa" : validation ? "Ler novamente" : "Abrir câmera"}
+            <Button
+              className={validation ? "secondary camera-button" : "camera-button"}
+              onClick={handleOpenCamera}
+              disabled={scanning || validatingQr || permissionFlowBusy || !next}
+            >
+              {isRequestingLocation && pendingAction === "camera"
+                ? <><LoaderCircle className="spin" />Verificando localização...</>
+                : isOpeningCamera && pendingAction === "camera"
+                  ? <><LoaderCircle className="spin" />Abrindo câmera...</>
+                  : validatingQr
+                    ? <><LoaderCircle className="spin" />Validando...</>
+                    : scanning ? "Câmera ativa" : validation ? "Ler novamente" : "Abrir câmera"}
             </Button>
             <Button
               className="secondary photo-button"
-              disabled={validatingQr || !next}
-              onClick={() => {
-                void stopCamera();
-                fileInputRef.current?.click();
-              }}
+              disabled={validatingQr || permissionFlowBusy || !next}
+              onClick={handleReadPhoto}
             >
-              <ImageUp />Ler por foto
+              {isRequestingLocation && pendingAction === "photo"
+                ? <><LoaderCircle className="spin" />Verificando localização...</>
+                : <><ImageUp />{requiredLocation && !validation ? "Abrir foto" : "Ler por foto"}</>}
             </Button>
             <input
               ref={fileInputRef}
