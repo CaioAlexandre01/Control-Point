@@ -73,7 +73,7 @@ function QRCodeContent() {
             <div className="qr-paper">
               <Image src={source} width={640} height={640} unoptimized alt={`QR Code de ${company.name}`} />
               <b>REGISTRE SEU PONTO</b>
-              <small>Aponte a câmera pelo sistema Pontofy</small>
+              <small>Aponte a câmera pelo sistema Ponto Uau</small>
             </div>
             <div className="qr-actions">
               <Button onClick={() => window.print()}><Printer />Imprimir</Button>

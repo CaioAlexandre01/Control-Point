@@ -75,7 +75,7 @@ export default function Login() {
       <div className="auth-copy">
         <div className="brand large">
           <span><Clock3 /></span>
-          <b>Ponto<span>fy</span></b>
+          <b>Ponto <span>Uau</span></b>
         </div>
         <h1>Ponto certo.<br /><em>Sem complicação.</em></h1>
         <p>Jornada validada por QR Code, localização e horário oficial.</p>

@@ -1,4 +1,4 @@
-# Pontofy
+# Ponto Uau
 
 Sistema de registro de ponto para Vercel com Next.js, Firebase Authentication e Cloud Firestore. A API Route usa Firebase Admin para repetir no servidor as validações de usuário, empresa, QR Code, GPS, raio e sequência.
 
@@ -63,7 +63,7 @@ Não é necessário ativar o plano Blaze ou publicar Firebase Functions.
 ## Publicação na Vercel
 
 1. Importe o repositório na Vercel.
-2. Se houver vários projetos, configure o **Root Directory** como `ponto-app`.
+2. Se houver vários projetos, configure o **Root Directory** para a pasta deste projeto.
 3. Cadastre todas as variáveis em **Settings > Environment Variables**.
 4. Atualize `NEXT_PUBLIC_APP_URL` com a URL final.
 5. Faça o deploy.

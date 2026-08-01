@@ -21,7 +21,7 @@ export function FirebaseConfigGate({ children }: { children: React.ReactNode }) 
       <Card>
         <div className="brand">
           <span><Clock3 size={18} /></span>
-          <b>Ponto<span>fy</span></b>
+          <b>Ponto <span>Uau</span></b>
         </div>
         <div className="config-icon"><Braces /></div>
         <span className="eyebrow">Configuração necessária</span>
