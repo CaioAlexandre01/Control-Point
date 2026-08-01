@@ -53,9 +53,15 @@ function ReportsContent() {
     setReference(nextMode === "daily" ? saoPauloDate() : saoPauloDate().slice(0, 7));
   }
 
+  function employeeName(userId: string) {
+    return users?.find((user) => user.uid === userId)?.name
+      ?? filtered.find((row) => row.userId === userId)?.employeeName
+      ?? "Funcionário excluído";
+  }
+
   function downloadCsv() {
     exportCsv(`relatorio-${reference}.csv`, summary.map(([userId, values]) => ({
-      Funcionário: users?.find((user) => user.uid === userId)?.name,
+      Funcionário: employeeName(userId),
       Período: reference,
       Dias: values.days,
       "Horas trabalhadas": minutesText(values.worked),
@@ -83,7 +89,7 @@ function ReportsContent() {
             <DataTable headers={["Funcionário", "Dias", "Trabalhado", "Intervalo", "Horas extras"]}>
               {summary.map(([userId, values]) => (
                 <tr key={userId}>
-                  <td>{users.find((user) => user.uid === userId)?.name ?? "—"}</td>
+                  <td>{employeeName(userId)}</td>
                   <td>{values.days}</td>
                   <td>{minutesText(values.worked)}</td>
                   <td>{minutesText(values.breaks)}</td>

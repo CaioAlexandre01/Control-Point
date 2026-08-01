@@ -171,6 +171,16 @@ export async function POST(request: NextRequest) {
     await db.runTransaction(async (transaction) => {
       const workdaySnapshot = await transaction.get(workdayRef);
       const current = workdaySnapshot.exists ? workdaySnapshot.data() : undefined;
+      if (
+        current
+        && (
+          current.userId !== decodedToken.uid
+          || current.companyId !== data.companyId
+          || current.date !== date
+        )
+      ) {
+        throw new ApiError(409, "A jornada existente não pertence ao funcionário autenticado.");
+      }
       const expected = expectedEvent(current);
       if (expected === null) throw new ApiError(409, "A jornada de hoje já foi encerrada.");
       if (expected !== data.type) {
@@ -186,6 +196,7 @@ export async function POST(request: NextRequest) {
       const update: Record<string, unknown> = {
         companyId: data.companyId,
         userId: decodedToken.uid,
+        employeeName: typeof user.name === "string" ? user.name : "Funcionário",
         date,
         [timestampField[data.type]]: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),

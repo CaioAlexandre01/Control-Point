@@ -12,7 +12,7 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { Copy, Link2Off, Plus, Power } from "lucide-react";
+import { Copy, Link2Off, Plus, Power, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -20,6 +20,7 @@ import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
 import { Alert, Badge, Button, Card, DataTable, Empty, Field, Loading, Modal } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
+import { deleteEmployee } from "@/lib/admin-actions";
 import { db } from "@/lib/firebase";
 import { companyUsers } from "@/lib/queries";
 import { randomToken } from "@/lib/utils";
@@ -40,6 +41,9 @@ function EmployeesContent() {
   const [open, setOpen] = useState(false);
   const [link, setLink] = useState("");
   const [error, setError] = useState("");
+  const [employeeToDelete, setEmployeeToDelete] = useState<AppUser>();
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } =
     useForm<Form>({ resolver: zodResolver(schema) });
 
@@ -101,6 +105,21 @@ function EmployeesContent() {
     await load();
   }
 
+  async function removeEmployee() {
+    if (!employeeToDelete) return;
+    try {
+      setDeleting(true);
+      setDeleteError("");
+      await deleteEmployee(employeeToDelete.uid);
+      setEmployeeToDelete(undefined);
+      await load();
+    } catch (caught) {
+      setDeleteError(caught instanceof Error ? caught.message : "Não foi possível excluir o funcionário.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <AppShell title="Funcionários">
       <div className="stack">
@@ -117,7 +136,22 @@ function EmployeesContent() {
                   <tr key={user.uid}>
                     <td>{user.name}</td><td>{user.email}</td>
                     <td><Badge tone={user.active ? "success" : "danger"}>{user.active ? "Ativo" : "Inativo"}</Badge></td>
-                    <td><button className="icon-button" onClick={() => toggleUser(user)} title={user.active ? "Desativar" : "Ativar"}><Power /></button></td>
+                    <td>
+                      <div className="row-actions">
+                        <button className="icon-button" onClick={() => toggleUser(user)} title={user.active ? "Desativar" : "Ativar"}><Power /></button>
+                        <button
+                          className="icon-button delete-icon-button"
+                          onClick={() => {
+                            setEmployeeToDelete(user);
+                            setDeleteError("");
+                          }}
+                          title="Excluir funcionário"
+                          aria-label={`Excluir ${user.name}`}
+                        >
+                          <Trash2 />
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </DataTable>
@@ -159,6 +193,20 @@ function EmployeesContent() {
             </div>
           </form>
         )}
+      </Modal>
+      <Modal
+        open={Boolean(employeeToDelete)}
+        title="Tem certeza?"
+        onClose={() => { if (!deleting) setEmployeeToDelete(undefined); }}
+      >
+        {deleteError && <Alert tone="error">{deleteError}</Alert>}
+        <p>
+          Deseja excluir permanentemente o funcionário <strong>{employeeToDelete?.name}</strong>?
+        </p>
+        <div className="modal-actions">
+          <Button className="secondary" disabled={deleting} onClick={() => setEmployeeToDelete(undefined)}>Cancelar</Button>
+          <Button className="danger-button" loading={deleting} onClick={removeEmployee}>Excluir funcionário</Button>
+        </div>
       </Modal>
     </AppShell>
   );

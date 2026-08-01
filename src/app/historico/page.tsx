@@ -13,16 +13,16 @@ export default function History() {
 }
 
 function HistoryContent() {
-  const { profile } = useAuth();
+  const { firebaseUser, profile } = useAuth();
   const [rows, setRows] = useState<Workday[]>();
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!profile) return;
-    userWorkdays(profile.companyId, profile.uid)
+    if (!firebaseUser || !profile) return;
+    userWorkdays(profile.companyId, firebaseUser.uid)
       .then(setRows)
       .catch((caught) => setError(caught instanceof Error ? caught.message : "Não foi possível carregar o histórico."));
-  }, [profile]);
+  }, [firebaseUser, profile]);
 
   return (
     <AppShell title="Meu histórico">

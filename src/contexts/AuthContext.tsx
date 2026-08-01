@@ -15,7 +15,7 @@ export function AuthProvider({children}:{children:React.ReactNode}){
    if(!active)return;
    unsubscribe=onAuthStateChanged(auth,async user=>{
     setUser(user);setProfile(null);
-    try{if(user){const s=await getDoc(doc(db,"users",user.uid));if(s.exists())setProfile({uid:s.id,...s.data()} as AppUser)}}
+    try{if(user){const s=await getDoc(doc(db,"users",user.uid));if(s.exists())setProfile({...s.data(),uid:s.id} as AppUser)}}
     finally{if(active)setLoading(false)}
    });
   }).catch(()=>setLoading(false));

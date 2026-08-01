@@ -82,7 +82,10 @@ export async function registerPunch(
 export async function getWorkday(userId: string, companyId: string) {
   const id = `${companyId}_${userId}_${saoPauloDate()}`;
   const snapshot = await getDoc(doc(db, "workdays", id));
-  return snapshot.exists()
-    ? ({ id: snapshot.id, ...snapshot.data() } as Workday)
-    : undefined;
+  if (!snapshot.exists()) return undefined;
+  const workday = { ...snapshot.data(), id: snapshot.id } as Workday;
+  if (workday.userId !== userId || workday.companyId !== companyId) {
+    throw new Error("A jornada encontrada não pertence ao funcionário autenticado.");
+  }
+  return workday;
 }

@@ -99,8 +99,9 @@ export default function Ponto() {
 }
 
 function PontoContent() {
-  const { profile } = useAuth();
+  const { firebaseUser, profile } = useAuth();
   const [workday, setWorkday] = useState<Workday>();
+  const [workdayLoadFailed, setWorkdayLoadFailed] = useState(false);
   const [validation, setValidation] = useState<Validation>();
   const [feedback, setFeedback] = useState<{ text: string; error?: boolean; info?: boolean }>();
   const [officialTime, setOfficialTime] = useState<Timestamp>();
@@ -124,12 +125,22 @@ function PontoContent() {
   const scanWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
   const decoderErrorShown = useRef(false);
   const nextActionRef = useRef<HTMLDivElement | null>(null);
-  const next = nextEvent(workday);
+  const next = workdayLoadFailed ? null : nextEvent(workday);
 
   const load = useCallback(async () => {
-    if (!profile) return;
-    setWorkday(await getWorkday(profile.uid, profile.companyId));
-  }, [profile]);
+    if (!firebaseUser || !profile) return;
+    setWorkdayLoadFailed(false);
+    try {
+      setWorkday(await getWorkday(firebaseUser.uid, profile.companyId));
+    } catch (caught) {
+      setWorkday(undefined);
+      setWorkdayLoadFailed(true);
+      setFeedback({
+        text: caught instanceof Error ? caught.message : "Não foi possível carregar sua jornada.",
+        error: true,
+      });
+    }
+  }, [firebaseUser, profile]);
 
   const stopCamera = useCallback(async () => {
     const instance = scanner.current;
@@ -454,10 +465,10 @@ function PontoContent() {
   }
 
   async function punch() {
-    if (!profile || !validation || !next) return;
+    if (!firebaseUser || !profile || !validation || !next) return;
     try {
       setSaving(true);
-      const result = await registerPunch(profile.uid, profile.companyId, next, validation);
+      const result = await registerPunch(firebaseUser.uid, profile.companyId, next, validation);
       setWorkday(result.workday);
       setValidation(undefined);
       clearRequiredLocation();
@@ -484,6 +495,9 @@ function PontoContent() {
 
   const visibleLocation = validation ?? requiredLocation;
   const permissionFlowBusy = isRequestingLocation || isOpeningCamera;
+  const nextActionLabel = workdayLoadFailed
+    ? "Jornada indisponível"
+    : next ? actionLabels[next] : "Jornada concluída";
 
   return (
     <AppShell title="Registrar ponto">
@@ -494,7 +508,7 @@ function PontoContent() {
               <ScanLine />
               <div>
                 <small>PRÓXIMA AÇÃO</small>
-                <h2>{next ? actionLabels[next] : "Jornada concluída"}</h2>
+                <h2>{nextActionLabel}</h2>
               </div>
             </div>
             <span className={`work-state ${workday?.status ?? "not-started"}`}>
@@ -554,7 +568,9 @@ function PontoContent() {
                   ? <><LoaderCircle className="spin" />Abrindo câmera...</>
                   : validatingQr
                     ? <><LoaderCircle className="spin" />Validando...</>
-                    : scanning ? "Câmera ativa" : validation ? "Ler novamente" : "Abrir câmera"}
+                    : scanning
+                      ? "Câmera ativa"
+                      : !next ? nextActionLabel : validation ? "Ler novamente" : "Abrir câmera"}
             </Button>
             <Button
               className="secondary photo-button"
