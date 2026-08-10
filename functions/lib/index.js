@@ -29,6 +29,8 @@ function saoPauloDate(date = new Date()) {
     return `${part("year")}-${part("month")}-${part("day")}`;
 }
 function expectedEvent(workday) {
+    if (workday?.status === "day_off")
+        return null;
     if (!workday?.clockInAt)
         return "clock_in";
     if (workday.status === "finished" || workday.clockOutAt)

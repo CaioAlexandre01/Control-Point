@@ -4,7 +4,7 @@ import { Download } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
-import { Button, Card, DataTable, Empty, Loading } from "@/components/ui";
+import { Button, Card, DataTable, Empty, Loading, PageHeader } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { companyUsers, companyWorkdays, exportCsv, minutesText } from "@/lib/queries";
 import { saoPauloDate } from "@/lib/utils";
@@ -37,12 +37,16 @@ function ReportsContent() {
     [rows, reference, mode],
   );
   const summary = useMemo(() => {
-    const result = new Map<string, { worked: number; breaks: number; days: number }>();
+    const result = new Map<string, { worked: number; breaks: number; days: number; daysOff: number }>();
     filtered.forEach((row) => {
-      const value = result.get(row.userId) ?? { worked: 0, breaks: 0, days: 0 };
-      value.worked += row.totalWorkedMinutes || 0;
-      value.breaks += row.totalBreakMinutes || 0;
-      value.days += 1;
+      const value = result.get(row.userId) ?? { worked: 0, breaks: 0, days: 0, daysOff: 0 };
+      if (row.status === "day_off") {
+        value.daysOff += 1;
+      } else {
+        value.worked += row.totalWorkedMinutes || 0;
+        value.breaks += row.totalBreakMinutes || 0;
+        value.days += 1;
+      }
       result.set(row.userId, value);
     });
     return [...result.entries()];
@@ -64,6 +68,7 @@ function ReportsContent() {
       Funcionário: employeeName(userId),
       Período: reference,
       Dias: values.days,
+      Folgas: values.daysOff,
       "Horas trabalhadas": minutesText(values.worked),
       Intervalos: minutesText(values.breaks),
       "Horas extras": minutesText(Math.max(0, values.worked - values.days * 480)),
@@ -72,11 +77,15 @@ function ReportsContent() {
 
   return (
     <AppShell title="Relatórios">
+      <PageHeader title="Análise de jornada" description="Consulte horas trabalhadas, intervalos e saldos por período." />
       <Card>
         <div className="section-title report-heading">
-          <div className="segmented">
-            <button className={mode === "daily" ? "active" : ""} onClick={() => switchMode("daily")}>Diário</button>
-            <button className={mode === "monthly" ? "active" : ""} onClick={() => switchMode("monthly")}>Mensal</button>
+          <div className="report-title-group">
+            <div><h2>Resumo por funcionário</h2><p>Selecione o formato e o período do relatório.</p></div>
+            <div className="segmented">
+              <button className={mode === "daily" ? "active" : ""} onClick={() => switchMode("daily")}>Diário</button>
+              <button className={mode === "monthly" ? "active" : ""} onClick={() => switchMode("monthly")}>Mensal</button>
+            </div>
           </div>
           <div className="filters">
             <input type={mode === "daily" ? "date" : "month"} value={reference} onChange={(event) => setReference(event.target.value)} />
@@ -86,11 +95,12 @@ function ReportsContent() {
         {!rows || !users ? <Loading /> : summary.length === 0
           ? <Empty title="Sem dados no período" description="Escolha outra data para consultar." />
           : (
-            <DataTable headers={["Funcionário", "Dias", "Trabalhado", "Intervalo", "Horas extras"]}>
+            <DataTable headers={["Funcionário", "Dias", "Folgas", "Trabalhado", "Intervalo", "Horas extras"]}>
               {summary.map(([userId, values]) => (
                 <tr key={userId}>
                   <td>{employeeName(userId)}</td>
                   <td>{values.days}</td>
+                  <td>{values.daysOff}</td>
                   <td>{minutesText(values.worked)}</td>
                   <td>{minutesText(values.breaks)}</td>
                   <td>{minutesText(Math.max(0, values.worked - values.days * 480))}</td>

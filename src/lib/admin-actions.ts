@@ -4,23 +4,29 @@ interface AdminActionResponse {
   error?: string;
 }
 
-async function authenticatedDelete(path: string) {
+async function authenticatedRequest<T extends AdminActionResponse>(path: string, init: RequestInit) {
   if (!auth.currentUser) throw new Error("Sua sessão expirou. Faça login novamente.");
   const idToken = await auth.currentUser.getIdToken();
   const response = await fetch(path, {
-    method: "DELETE",
+    ...init,
     headers: {
+      ...init.headers,
       Authorization: `Bearer ${idToken}`,
     },
   });
 
-  let result: AdminActionResponse;
+  let result: T;
   try {
-    result = await response.json() as AdminActionResponse;
+    result = await response.json() as T;
   } catch {
     throw new Error("O servidor retornou uma resposta inválida.");
   }
-  if (!response.ok) throw new Error(result.error || "Não foi possível concluir a exclusão.");
+  if (!response.ok) throw new Error(result.error || "Não foi possível concluir a operação.");
+  return result;
+}
+
+async function authenticatedDelete(path: string) {
+  await authenticatedRequest<AdminActionResponse>(path, { method: "DELETE" });
 }
 
 export function deleteWorkday(workdayId: string) {
@@ -29,4 +35,25 @@ export function deleteWorkday(workdayId: string) {
 
 export function deleteEmployee(userId: string) {
   return authenticatedDelete(`/api/admin/funcionarios/${encodeURIComponent(userId)}`);
+}
+
+export type SystemResetMode = "hours" | "all";
+
+interface SystemResetResponse extends AdminActionResponse {
+  ok: boolean;
+  mode: SystemResetMode;
+  deleted: {
+    workdays: number;
+    auditLogs: number;
+    invites?: number;
+    users?: number;
+  };
+}
+
+export function resetSystem(mode: SystemResetMode) {
+  return authenticatedRequest<SystemResetResponse>("/api/admin/reset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
 }

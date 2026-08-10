@@ -49,6 +49,7 @@ function saoPauloDate(date = new Date()) {
 }
 
 function expectedEvent(workday?: FirebaseFirestore.DocumentData): EventType | null {
+  if (workday?.status === "day_off") return null;
   if (!workday?.clockInAt) return "clock_in";
   if (workday.status === "finished" || workday.clockOutAt) return null;
   if (workday.status === "on_break" && workday.breakStartAt && !workday.breakEndAt) {

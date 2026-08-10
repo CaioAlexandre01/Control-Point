@@ -4,6 +4,7 @@ import { saoPauloDate } from "./utils";
 import type { EventType, Validation, Workday } from "@/types";
 
 export function nextEvent(workday?: Workday): EventType | null {
+  if (workday?.status === "day_off") return null;
   if (!workday?.clockInAt) return "clock_in";
   if (workday.status === "finished" || workday.clockOutAt) return null;
   if (workday.status === "on_break" && workday.breakStartAt && !workday.breakEndAt) {

@@ -497,7 +497,7 @@ function PontoContent() {
   const permissionFlowBusy = isRequestingLocation || isOpeningCamera;
   const nextActionLabel = workdayLoadFailed
     ? "Jornada indisponível"
-    : next ? actionLabels[next] : "Jornada concluída";
+    : workday?.status === "day_off" ? "Folga programada" : next ? actionLabels[next] : "Jornada concluída";
 
   return (
     <AppShell title="Registrar ponto">
@@ -512,7 +512,7 @@ function PontoContent() {
               </div>
             </div>
             <span className={`work-state ${workday?.status ?? "not-started"}`}>
-              {workday?.status === "on_break" ? "Intervalo" : workday?.status === "finished" ? "Concluído" : workday?.status === "working" ? "Trabalhando" : "Não iniciada"}
+              {workday?.status === "day_off" ? "Folga" : workday?.status === "on_break" ? "Intervalo" : workday?.status === "finished" ? "Concluído" : workday?.status === "working" ? "Trabalhando" : "Não iniciada"}
             </span>
           </div>
 

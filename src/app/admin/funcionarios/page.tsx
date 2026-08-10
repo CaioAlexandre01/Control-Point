@@ -12,13 +12,13 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { Copy, Link2Off, Plus, Power, Trash2 } from "lucide-react";
+import { CheckCircle2, Copy, Link2Off, Mail, Plus, Power, Trash2, UsersRound } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
-import { Alert, Badge, Button, Card, DataTable, Empty, Field, Loading, Modal } from "@/components/ui";
+import { Alert, Badge, Button, Card, DataTable, Empty, Field, Loading, Modal, PanelHeader, StatCard } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { deleteEmployee } from "@/lib/admin-actions";
 import { db } from "@/lib/firebase";
@@ -122,19 +122,40 @@ function EmployeesContent() {
 
   return (
     <AppShell title="Funcionários">
+      <div className="metric-grid employees-metrics">
+        <StatCard
+          icon={<UsersRound />}
+          label="Funcionários ativos"
+          value={users?.filter((user) => user.active).length ?? "—"}
+          description="Colaboradores com acesso"
+        />
+        <StatCard
+          icon={<Mail />}
+          label="Convites pendentes"
+          value={invites?.filter((invite) => invite.active && !invite.used).length ?? "—"}
+          description="Aguardando aceite"
+        />
+        <StatCard
+          icon={<CheckCircle2 />}
+          label="Convites utilizados"
+          value={invites?.filter((invite) => invite.used).length ?? "—"}
+          description="Convites já aceitos"
+        />
+      </div>
       <div className="stack">
         <Card>
-          <div className="section-title">
-            <h2>Funcionários</h2>
-            <Button onClick={() => setOpen(true)}><Plus />Novo convite</Button>
-          </div>
+          <PanelHeader
+            title="Funcionários"
+            description="Gerencie acessos e acompanhe o status da equipe."
+            actions={<Button onClick={() => setOpen(true)}><Plus />Novo convite</Button>}
+          />
           {!users ? <Loading /> : users.length === 0
             ? <Empty title="Nenhum funcionário" description="Crie um convite para adicionar alguém." />
             : (
               <DataTable headers={["Nome", "E-mail", "Status", "Ação"]}>
                 {users.map((user) => (
                   <tr key={user.uid}>
-                    <td>{user.name}</td><td>{user.email}</td>
+                    <td><div className="employee-cell"><span>{user.name.slice(0, 2).toUpperCase()}</span><strong>{user.name}</strong></div></td><td>{user.email}</td>
                     <td><Badge tone={user.active ? "success" : "danger"}>{user.active ? "Ativo" : "Inativo"}</Badge></td>
                     <td>
                       <div className="row-actions">
@@ -158,7 +179,7 @@ function EmployeesContent() {
             )}
         </Card>
         <Card>
-          <div className="section-title"><h2>Convites</h2></div>
+          <PanelHeader title="Convites" description="Histórico dos convites enviados pela empresa." />
           {!invites ? <Loading /> : invites.length === 0
             ? <Empty title="Nenhum convite" description="Convites enviados aparecem aqui." />
             : (

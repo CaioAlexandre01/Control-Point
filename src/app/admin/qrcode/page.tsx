@@ -3,11 +3,11 @@
 import Image from "next/image";
 import QRCode from "qrcode";
 import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
-import { Download, Printer, RefreshCw } from "lucide-react";
+import { Download, Printer, RefreshCw, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
-import { Alert, Button, Card, Loading, Modal } from "@/components/ui";
+import { Alert, Button, Card, Loading, Modal, PageHeader, PanelHeader } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
 import { randomToken } from "@/lib/utils";
@@ -61,15 +61,15 @@ function QRCodeContent() {
     }
   }
 
-  if (!company && !error) return <Loading />;
   return (
     <AppShell title="QR Code">
+      <PageHeader title="Código de validação" description="Disponibilize o código oficial usado nos registros de ponto da empresa." />
       {error && <Alert tone="error">{error}</Alert>}
+      {!company && !error && <Loading />}
       {company && (
         <div className="qr-layout">
           <Card className="qr-card">
-            <span className="eyebrow">Código de validação</span>
-            <h2>{company.name}</h2>
+            <PanelHeader title={company.name} description="QR Code ativo para registro de ponto." />
             <div className="qr-paper">
               <Image src={source} width={640} height={640} unoptimized alt={`QR Code de ${company.name}`} />
               <b>REGISTRE SEU PONTO</b>
@@ -81,6 +81,7 @@ function QRCodeContent() {
             </div>
           </Card>
           <Card>
+            <span className="security-icon"><ShieldCheck /></span>
             <h3>Segurança do código</h3>
             <p className="muted">Gerar um novo código invalida imediatamente todas as cópias anteriores.</p>
             <Button className="danger-button" onClick={() => setConfirming(true)}><RefreshCw />Gerar novo código</Button>

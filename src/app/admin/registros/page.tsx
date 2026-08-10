@@ -5,7 +5,7 @@ import { Pencil, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
-import { Alert, Button, Card, DataTable, Empty, Field, Loading, Modal } from "@/components/ui";
+import { Alert, Badge, Button, Card, DataTable, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { deleteWorkday } from "@/lib/admin-actions";
 import { db } from "@/lib/firebase";
@@ -27,6 +27,7 @@ const DAILY_TARGET_MINUTES = 8 * 60;
 
 type PunchTimeField = "clockInAt" | "breakStartAt" | "breakEndAt" | "clockOutAt";
 type PunchTimes = Record<PunchTimeField, string>;
+type CorrectionMode = "active" | "day_off";
 
 const EMPTY_PUNCH_TIMES: PunchTimes = {
   clockInAt: "",
@@ -133,6 +134,7 @@ function RecordsContent() {
   const [audits, setAudits] = useState<AuditLog[]>();
   const [selectedDate, setSelectedDate] = useState(saoPauloDate());
   const [selected, setSelected] = useState<Workday>();
+  const [correctionMode, setCorrectionMode] = useState<CorrectionMode>("active");
   const [punchTimes, setPunchTimes] = useState<PunchTimes>(EMPTY_PUNCH_TIMES);
   const [reason, setReason] = useState("");
   const [minutes, setMinutes] = useState(0);
@@ -171,6 +173,7 @@ function RecordsContent() {
 
   function selectForCorrection(workday: Workday) {
     setSelected(workday);
+    setCorrectionMode(workday.status === "day_off" ? "day_off" : "active");
     setPunchTimes({
       clockInAt: timeInputValue(workday.clockInAt),
       breakStartAt: timeInputValue(workday.breakStartAt),
@@ -199,8 +202,8 @@ function RecordsContent() {
     try {
       setSaving(true);
       setError("");
-      const corrected = validatePunchTimes(selected.date, punchTimes);
-      if (!Number.isFinite(minutes) || minutes < 0) {
+      const corrected = correctionMode === "active" ? validatePunchTimes(selected.date, punchTimes) : undefined;
+      if (correctionMode === "active" && (!Number.isFinite(minutes) || minutes < 0)) {
         throw new Error("O total trabalhado deve ser um número maior ou igual a zero.");
       }
       const auditId = randomToken(16);
@@ -214,23 +217,31 @@ function RecordsContent() {
         totalBreakMinutes: selected.totalBreakMinutes,
         status: selected.status ?? null,
       };
-      const after = {
-        clockInAt: corrected.clockInAt,
-        breakStartAt: corrected.breakStartAt ?? null,
-        breakEndAt: corrected.breakEndAt ?? null,
-        clockOutAt: corrected.clockOutAt ?? null,
+      const after = correctionMode === "day_off" ? {
+        clockInAt: null,
+        breakStartAt: null,
+        breakEndAt: null,
+        clockOutAt: null,
+        totalWorkedMinutes: 0,
+        totalBreakMinutes: 0,
+        status: "day_off",
+      } : {
+        clockInAt: corrected!.clockInAt,
+        breakStartAt: corrected!.breakStartAt ?? null,
+        breakEndAt: corrected!.breakEndAt ?? null,
+        clockOutAt: corrected!.clockOutAt ?? null,
         totalWorkedMinutes: Math.round(minutes),
-        totalBreakMinutes: corrected.totalBreakMinutes,
-        status: corrected.status,
+        totalBreakMinutes: corrected!.totalBreakMinutes,
+        status: corrected!.status,
       };
       batch.update(doc(db, "workdays", selected.id), {
-        clockInAt: corrected.clockInAt,
-        breakStartAt: corrected.breakStartAt ?? deleteField(),
-        breakEndAt: corrected.breakEndAt ?? deleteField(),
-        clockOutAt: corrected.clockOutAt ?? deleteField(),
-        totalWorkedMinutes: Math.round(minutes),
-        totalBreakMinutes: corrected.totalBreakMinutes,
-        status: corrected.status,
+        clockInAt: correctionMode === "day_off" ? deleteField() : corrected!.clockInAt,
+        breakStartAt: correctionMode === "day_off" ? deleteField() : corrected!.breakStartAt ?? deleteField(),
+        breakEndAt: correctionMode === "day_off" ? deleteField() : corrected!.breakEndAt ?? deleteField(),
+        clockOutAt: correctionMode === "day_off" ? deleteField() : corrected!.clockOutAt ?? deleteField(),
+        totalWorkedMinutes: correctionMode === "day_off" ? 0 : Math.round(minutes),
+        totalBreakMinutes: correctionMode === "day_off" ? 0 : corrected!.totalBreakMinutes,
+        status: correctionMode === "day_off" ? "day_off" : corrected!.status,
         correctionAuditId: auditId,
         updatedAt: serverTimestamp(),
       });
@@ -246,6 +257,7 @@ function RecordsContent() {
       });
       await batch.commit();
       setSelected(undefined);
+      setCorrectionMode("active");
       setPunchTimes(EMPTY_PUNCH_TIMES);
       setReason("");
       await load();
@@ -273,6 +285,7 @@ function RecordsContent() {
 
   return (
     <AppShell title="Registros">
+      <PageHeader title="Jornadas da equipe" description="Consulte batidas, corrija horários e acompanhe o histórico de alterações." />
       <div className="stack">
       <Card>
         <div className="section-title records-heading">
@@ -310,7 +323,7 @@ function RecordsContent() {
           ? <Empty title="Nenhum registro" description={selectedDate ? "Não há jornadas registradas nesta data." : "As jornadas da empresa aparecerão aqui."} />
           : (
             <div className="records-table">
-            <DataTable headers={["Funcionário", "Data", "Entrada", "Intervalo ida", "Intervalo volta", "Saída", "Saldo 8h", ""]}>
+            <DataTable headers={["Funcionário", "Data", "Entrada", "Intervalo ida", "Intervalo volta", "Saída", "Situação", "Saldo 8h", ""]}>
               {rows.map((row) => (
                 <tr key={row.id}>
                   <td>{users.find((user) => user.uid === row.userId)?.name ?? row.employeeName ?? "Funcionário excluído"}</td>
@@ -319,6 +332,7 @@ function RecordsContent() {
                   <td className="time-cell">{timeText(row.breakStartAt)}</td>
                   <td className="time-cell">{timeText(row.breakEndAt)}</td>
                   <td className="time-cell">{timeText(row.clockOutAt)}</td>
+                  <td><Badge tone={row.status === "finished" ? "success" : row.status === "on_break" ? "warning" : "neutral"}>{row.status === "day_off" ? "Folga" : row.status === "finished" ? "Concluído" : row.status === "on_break" ? "Intervalo" : "Ativo"}</Badge></td>
                   <td className={row.status === "finished" && row.totalWorkedMinutes >= DAILY_TARGET_MINUTES ? "balance positive" : row.status === "finished" ? "balance negative" : "balance"}>
                     {balanceText(row)}
                   </td>
@@ -362,7 +376,7 @@ function RecordsContent() {
           )}
       </Card>
       </div>
-      <Modal open={Boolean(selected)} title="Editar horários da jornada" onClose={() => setSelected(undefined)}>
+      <Modal open={Boolean(selected)} title="Editar jornada" onClose={() => setSelected(undefined)}>
         {error && <Alert tone="error">{error}</Alert>}
         {selected && (
           <p className="table-note">
@@ -371,21 +385,34 @@ function RecordsContent() {
             {selected.date.split("-").reverse().join("/")}
           </p>
         )}
-        <div className="form-grid punch-time-fields">
-          <Field label="Entrada" type="time" value={punchTimes.clockInAt} onChange={(event) => updatePunchTime("clockInAt", event.target.value)} />
-          <Field label="Intervalo — saída" type="time" value={punchTimes.breakStartAt} onChange={(event) => updatePunchTime("breakStartAt", event.target.value)} />
-          <Field label="Intervalo — retorno" type="time" value={punchTimes.breakEndAt} onChange={(event) => updatePunchTime("breakEndAt", event.target.value)} />
-          <Field label="Saída" type="time" value={punchTimes.clockOutAt} onChange={(event) => updatePunchTime("clockOutAt", event.target.value)} />
-        </div>
-        <Field label="Total trabalhado (minutos)" type="number" min={0} step={1} value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} />
-        <p className="table-note">O total é recalculado ao alterar uma sequência completa e pode ser ajustado manualmente.</p>
+        <label className="field correction-status-field">
+          <span>Situação do dia</span>
+          <select value={correctionMode} onChange={(event) => setCorrectionMode(event.target.value as CorrectionMode)}>
+            <option value="active">Ativo</option>
+            <option value="day_off">Folga</option>
+          </select>
+        </label>
+        {correctionMode === "active" ? (
+          <>
+            <div className="form-grid punch-time-fields">
+              <Field label="Entrada" type="time" value={punchTimes.clockInAt} onChange={(event) => updatePunchTime("clockInAt", event.target.value)} />
+              <Field label="Intervalo — saída" type="time" value={punchTimes.breakStartAt} onChange={(event) => updatePunchTime("breakStartAt", event.target.value)} />
+              <Field label="Intervalo — retorno" type="time" value={punchTimes.breakEndAt} onChange={(event) => updatePunchTime("breakEndAt", event.target.value)} />
+              <Field label="Saída" type="time" value={punchTimes.clockOutAt} onChange={(event) => updatePunchTime("clockOutAt", event.target.value)} />
+            </div>
+            <Field label="Total trabalhado (minutos)" type="number" min={0} step={1} value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} />
+            <p className="table-note">O total é recalculado ao alterar uma sequência completa e pode ser ajustado manualmente.</p>
+          </>
+        ) : (
+          <Alert>Os horários serão removidos e esta jornada será marcada como folga.</Alert>
+        )}
         <label className="field">
           <span>Motivo obrigatório</span>
           <textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Informe o motivo da correção" />
         </label>
         <div className="modal-actions">
           <Button className="secondary" onClick={() => setSelected(undefined)}>Cancelar</Button>
-          <Button loading={saving} disabled={reason.trim().length < 5 || !Number.isFinite(minutes) || minutes < 0} onClick={correct}>Salvar alterações</Button>
+          <Button loading={saving} disabled={reason.trim().length < 5 || correctionMode === "active" && (!Number.isFinite(minutes) || minutes < 0)} onClick={correct}>Salvar alterações</Button>
         </div>
       </Modal>
       <Modal

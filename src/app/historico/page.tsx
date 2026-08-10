@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
-import { Alert, Badge, Card, DataTable, Empty, Loading } from "@/components/ui";
+import { Alert, Badge, Card, DataTable, Empty, Loading, PageHeader, PanelHeader } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { minutesText, userWorkdays } from "@/lib/queries";
 import type { Workday } from "@/types";
@@ -26,8 +26,9 @@ function HistoryContent() {
 
   return (
     <AppShell title="Meu histórico">
+      <PageHeader title="Histórico de jornadas" description="Acompanhe seus registros, intervalos e horas trabalhadas." />
       <Card>
-        <div className="section-title"><h2>Registros recentes</h2></div>
+        <PanelHeader title="Registros recentes" description="Suas jornadas mais recentes aparecem primeiro." />
         {error ? <Alert tone="error">{error}</Alert> : !rows ? <Loading /> : rows.length === 0
           ? <Empty title="Nenhum registro" description="Sua primeira jornada aparecerá aqui." />
           : (
@@ -35,7 +36,7 @@ function HistoryContent() {
               {rows.map((row) => (
                 <tr key={row.id}>
                   <td>{row.date.split("-").reverse().join("/")}</td>
-                  <td><Badge tone={row.status === "finished" ? "success" : "warning"}>{row.status === "finished" ? "Encerrada" : row.status === "on_break" ? "Intervalo" : "Em andamento"}</Badge></td>
+                  <td><Badge tone={row.status === "finished" ? "success" : row.status === "day_off" ? "neutral" : "warning"}>{row.status === "day_off" ? "Folga" : row.status === "finished" ? "Encerrada" : row.status === "on_break" ? "Intervalo" : "Em andamento"}</Badge></td>
                   <td>{minutesText(row.totalWorkedMinutes)}</td>
                   <td>{minutesText(row.totalBreakMinutes)}</td>
                 </tr>
