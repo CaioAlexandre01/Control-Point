@@ -27,17 +27,17 @@ const authErrors: Record<string, string> = {
 
 export default function Login() {
   const router = useRouter();
-  const { firebaseUser, profile, loading } = useAuth();
+  const { firebaseUser, profile, loading, authError } = useAuth();
   const [error, setError] = useState("");
   const [show, setShow] = useState(false);
   const { register, handleSubmit, formState: { errors, isSubmitting } } =
     useForm<Form>({ resolver: zodResolver(schema) });
 
   useEffect(() => {
-    if (!loading && firebaseUser && profile) {
+    if (!loading && !isSubmitting && firebaseUser && profile?.active) {
       router.replace(profile.role === "admin" ? "/admin" : "/ponto");
     }
-  }, [loading, firebaseUser, profile, router]);
+  }, [loading, isSubmitting, firebaseUser, profile, router]);
 
   async function submit(values: Form) {
     try {
@@ -57,7 +57,7 @@ export default function Login() {
         await signOut(auth);
         throw new Error("Seu acesso está inativo.");
       }
-      router.replace(user.role === "admin" ? "/admin" : "/ponto");
+      // Navigate only after the provider and the validation above are ready.
     } catch (caught) {
       const code = typeof caught === "object" && caught && "code" in caught
         ? String(caught.code)
@@ -68,7 +68,7 @@ export default function Login() {
     }
   }
 
-  if (loading || (firebaseUser && profile)) return <Loading />;
+  if (loading || (firebaseUser && profile?.active)) return <Loading />;
 
   return (
     <div className="auth-page">
@@ -87,7 +87,7 @@ export default function Login() {
       </div>
       <form className="auth-card" onSubmit={handleSubmit(submit)}>
         <div><h2>Bem-vindo</h2><p>Entre com suas credenciais</p></div>
-        {error && <Alert tone="error">{error}</Alert>}
+        {(error || authError) && <Alert tone="error">{error || authError}</Alert>}
         <Field
           label="E-mail"
           type="email"
