@@ -18,10 +18,14 @@ const schema = z.object({
 });
 type Form = z.infer<typeof schema>;
 
+class InviteLoadError extends Error {
+  constructor(message: string, public code?: string) { super(message); }
+}
+
 async function loadInvite(token: string): Promise<{ email: string }> {
   const response = await fetch(`/api/convites/${encodeURIComponent(token)}`, { cache: "no-store" });
   const result = await response.json().catch(() => { throw new Error("Não foi possível validar o convite. Atualize a página e tente novamente."); });
-  if (!response.ok) throw new Error(result.error || "Não foi possível validar o convite.");
+  if (!response.ok) throw new InviteLoadError(result.error || "Não foi possível validar o convite.", result.code);
   return result;
 }
 
@@ -36,17 +40,19 @@ function Activate() {
   const [activated, setActivated] = useState(false);
   const [invite, setInvite] = useState<{ email: string }>();
   const [checking, setChecking] = useState(true);
+  const [alreadyActivated, setAlreadyActivated] = useState(false);
   const [error, setError] = useState("");
   const { register, handleSubmit, setValue, formState: { errors, isSubmitting } } =
     useForm<Form>({ resolver: zodResolver(schema) });
 
   useEffect(() => {
-    if (activated && !loading && profile?.active && profile.inviteId === token) router.replace("/ponto");
-  }, [activated, loading, profile, token, router]);
+    if (!loading && profile?.active && profile.role === "employee" && profile.inviteId === token) router.replace("/ponto");
+  }, [loading, profile, token, router]);
 
   useEffect(() => {
     let active = true;
     setActivated(false);
+    setAlreadyActivated(false);
     setInvite(undefined);
     setError("");
     setChecking(true);
@@ -61,6 +67,10 @@ function Activate() {
       setValue("email", data.email);
     }).catch((caught) => {
       if (!active) return;
+      if (caught instanceof InviteLoadError && caught.code === "already-activated") {
+        setAlreadyActivated(true);
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "Não foi possível validar o convite.");
     }).finally(() => { if (active) setChecking(false); });
     return () => { active = false; };
@@ -110,7 +120,8 @@ function Activate() {
     <div className="center-page">
       <Card className="activation">
         <span className="eyebrow">Ativação de conta</span>
-        <h1>{activated ? "Conta ativada" : invite ? "Crie seu acesso" : "Convite indisponível"}</h1>
+        <h1>{activated ? "Conta ativada" : alreadyActivated ? "Continue seu acesso" : invite ? "Crie seu acesso" : "Convite indisponível"}</h1>
+        {alreadyActivated && <Alert>Já existe uma conta associada a este convite. Entre com seu e-mail e senha. Se não souber a senha, use “Esqueci minha senha” na página de login.</Alert>}
         {error && <Alert tone="error">{error}</Alert>}
         {activated && <Alert tone="success">Carregando seu acesso… Se a página não abrir automaticamente, use o login abaixo.</Alert>}
         {invite && !activated && (

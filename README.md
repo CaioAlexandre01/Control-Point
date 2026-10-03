@@ -90,11 +90,23 @@ Para testar as APIs reais com Authentication e Firestore isolados (requer Java 2
 npm run test:integration
 ```
 
+Para validar também as telas em um navegador Chromium com viewport de celular:
+
+```bash
+npx playwright install chromium
+npm run test:browser
+```
+
+O navegador testa cadastro, retomada após falha de conexão, login, recuperação de senha, administração de convites e quatro marcações com QR por imagem e geolocalização simulada. O build de desenvolvimento dos testes fica em `.next-qa`, separado do localhost habitual.
+
+No desenvolvimento local, o servidor também precisa de credenciais Firebase Admin. Além da conta de serviço, aceita `FIREBASE_ADMIN_PROJECT_ID` com `GOOGLE_APPLICATION_CREDENTIALS` apontando para um arquivo ADC válido, fora do repositório. As variáveis públicas `NEXT_PUBLIC_FIREBASE_*` não substituem essas credenciais. Após configurar `.env.local`, reinicie o servidor caso não recarregue automaticamente.
+
 Os testes usam exclusivamente o projeto fictício `demo-ponto-uau`, os emuladores locais e a porta 3107 para o Next.js. Cobrem criação/renovação de convites, expiração no servidor, cadastro interrompido, repetição e concorrência, login, permissões e a sequência completa de ponto. Nenhum funcionário real é criado ou alterado.
 
 ## Convites e recuperação de acesso
 
 - A validade de sete dias é calculada no servidor, independentemente do relógio do celular.
+- A consulta da jornada e os registros de ponto usam o dia oficial de São Paulo retornado pelo servidor.
 - A ativação cria o perfil e consome o convite na mesma transação. Repetir a requisição após uma falha de conexão é seguro.
 - A sessão acompanha a criação do perfil antes de abrir a página de ponto.
 - No painel de funcionários, **Renovar por 7 dias** mantém o mesmo link para um convite ainda não utilizado.

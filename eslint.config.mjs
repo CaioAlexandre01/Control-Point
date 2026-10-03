@@ -11,5 +11,5 @@ export default defineConfig([
       "react-hooks/preserve-manual-memoization": "off"
     }
   },
-  globalIgnores([".next/**","functions/**","next-env.d.ts"])
+  globalIgnores([".next/**", ".next-qa/**", "test-results/**", "playwright-report/**", "functions/**", "next-env.d.ts"])
 ]);

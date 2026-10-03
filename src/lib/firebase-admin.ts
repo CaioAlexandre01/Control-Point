@@ -1,4 +1,4 @@
-import { cert, getApps, initializeApp } from "firebase-admin/app";
+import { applicationDefault, cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 
@@ -9,14 +9,15 @@ function getAdminApp() {
   const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL;
   const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, "\n");
 
-  if (!projectId || !clientEmail || !privateKey) {
+  if (!projectId || ((!clientEmail || !privateKey) && !process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
     throw new Error(
-      "Firebase Admin não configurado. Cadastre FIREBASE_ADMIN_PROJECT_ID, FIREBASE_ADMIN_CLIENT_EMAIL e FIREBASE_ADMIN_PRIVATE_KEY.",
+      "Firebase Admin não configurado. Cadastre FIREBASE_ADMIN_PROJECT_ID e as credenciais da conta de serviço ou GOOGLE_APPLICATION_CREDENTIALS.",
     );
   }
 
   return initializeApp({
-    credential: cert({ projectId, clientEmail, privateKey }),
+    projectId,
+    credential: clientEmail && privateKey ? cert({ projectId, clientEmail, privateKey }) : applicationDefault(),
   });
 }
 

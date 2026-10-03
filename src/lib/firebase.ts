@@ -1,6 +1,6 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { getAuth, type Auth } from "firebase/auth";
-import { getFirestore, type Firestore } from "firebase/firestore";
+import { connectAuthEmulator, getAuth, type Auth } from "firebase/auth";
+import { connectFirestoreEmulator, getFirestore, type Firestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -24,12 +24,15 @@ export const isFirebaseConfigured = requiredConfig.every(
   (value) => typeof value === "string" && value.trim().length > 0,
 );
 
-const app = isFirebaseConfigured
-  ? getApps().length
-    ? getApp()
-    : initializeApp(firebaseConfig)
-  : null;
+const existingApp = isFirebaseConfigured && getApps().length ? getApp() : null;
+const app = isFirebaseConfigured ? existingApp ?? initializeApp(firebaseConfig) : null;
 
 export const auth = (app ? getAuth(app) : null) as Auth;
 export const db = (app ? getFirestore(app) : null) as Firestore;
+// UI tests use a demo project only. Production builds never connect to emulators.
+if (app && !existingApp && process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_FIREBASE_EMULATORS === "true") {
+  if (!firebaseConfig.projectId?.startsWith("demo-")) throw new Error("Os emuladores exigem um projeto demo.");
+  if (!auth.emulatorConfig) connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+  connectFirestoreEmulator(db, "127.0.0.1", 8185);
+}
 // Analytics is intentionally not initialized here; this module also runs during SSR.

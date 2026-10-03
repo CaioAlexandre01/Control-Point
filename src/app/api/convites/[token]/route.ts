@@ -16,7 +16,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const snapshot = await getAdminDb().doc(`invites/${token}`).get();
     const invite = snapshot.data();
     const error = validateInvite(invite, Date.now());
-    if (error) return NextResponse.json({ error }, { status: 410, headers });
+    if (error) return NextResponse.json({ error, code: invite?.used ? "already-activated" : "unavailable" }, { status: 410, headers });
     return NextResponse.json({ email: invite!.email }, { headers });
   } catch {
     return NextResponse.json({ error: "Não foi possível validar o convite. Tente novamente." }, { status: 503, headers });

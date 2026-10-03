@@ -1,6 +1,7 @@
 node_modules/
 functions/node_modules/
 .next/
+.next-qa/
 out/
 dist/
 
@@ -14,3 +15,5 @@ dist/
 firebase-debug.log
 *.log
 .DS_Store
+test-results/
+playwright-report/

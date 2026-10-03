@@ -16,6 +16,7 @@ export function nextEvent(workday?: Workday): EventType | null {
 
 interface RegisterPunchResponse {
   officialTimestampMillis: number;
+  workdayDate?: string;
   error?: string;
 }
 
@@ -70,7 +71,8 @@ export async function registerPunch(
     throw new Error("O servidor não retornou o horário oficial.");
   }
 
-  const workday = await getWorkday(userId, companyId);
+  const workday = await getWorkday(userId, companyId,
+    result.workdayDate ?? saoPauloDate(new Date(result.officialTimestampMillis)));
   if (!workday) {
     throw new Error("O registro foi salvo, mas a jornada não pôde ser carregada.");
   }
@@ -80,8 +82,15 @@ export async function registerPunch(
   };
 }
 
-export async function getWorkday(userId: string, companyId: string) {
-  const id = `${companyId}_${userId}_${saoPauloDate()}`;
+export async function getWorkday(userId: string, companyId: string, date?: string) {
+  if (!date) {
+    const response = await fetch("/api/ponto/registrar", { cache: "no-store" });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || typeof result?.date !== "string") throw new Error("Não foi possível consultar o dia oficial. Tente novamente.");
+    date = result.date;
+  }
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Data da jornada inválida.");
+  const id = `${companyId}_${userId}_${date}`;
   const snapshot = await getDoc(doc(db, "workdays", id));
   if (!snapshot.exists()) return undefined;
   const workday = { ...snapshot.data(), id: snapshot.id } as Workday;

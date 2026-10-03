@@ -52,6 +52,7 @@ test('public validation uses server time, disables caching and does not disclose
     assert.equal(response.status, { valid: 200, expired: 410, used: 410, missing: 410, offline: 503, 'bad-token': 400 }[outcome]);
     if (outcome === 'valid') assert.equal(response.body.email, validInvite.email);
     else assert.equal(response.body.email, undefined);
+    if (outcome === 'used') assert.equal(response.body.code, 'already-activated');
     assert.equal(reads, outcome === 'bad-token' ? 0 : 1);
   }
 });

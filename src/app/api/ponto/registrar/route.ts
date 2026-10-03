@@ -94,6 +94,10 @@ function validateBody(value: unknown): PunchBody {
   };
 }
 
+export async function GET() {
+  return NextResponse.json({ date: saoPauloDate() }, { headers: { "Cache-Control": "no-store" } });
+}
+
 export async function POST(request: NextRequest) {
   try {
     const authorization = request.headers.get("authorization");
@@ -250,6 +254,7 @@ export async function POST(request: NextRequest) {
     const officialTimestamp = eventSnapshot.get("officialTimestamp") as Timestamp;
     return NextResponse.json({
       officialTimestampMillis: officialTimestamp.toMillis(),
+      workdayDate: date,
     });
   } catch (caught) {
     if (caught instanceof ApiError) {
