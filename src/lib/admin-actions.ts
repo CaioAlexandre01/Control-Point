@@ -5,15 +5,19 @@ interface AdminActionResponse {
 }
 
 async function authenticatedRequest<T extends AdminActionResponse>(path: string, init: RequestInit) {
-  if (!auth.currentUser) throw new Error("Sua sessão expirou. Faça login novamente.");
-  const idToken = await auth.currentUser.getIdToken();
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      ...init.headers,
-      Authorization: `Bearer ${idToken}`,
-    },
-  });
+  const user = auth.currentUser;
+  if (!user) throw new Error("Sua sessão expirou. Faça login novamente.");
+  const send = async (forceRefresh: boolean) => {
+    const idToken = await user.getIdToken(forceRefresh);
+    return fetch(path, {
+      ...init,
+      headers: { ...init.headers, Authorization: `Bearer ${idToken}` },
+    });
+  };
+  let response = await send(false);
+  // The device clock can leave a locally cached token looking valid after expiry.
+  // All admin routes reject unauthorized requests before performing any mutation.
+  if (response.status === 401 && auth.currentUser?.uid === user.uid) response = await send(true);
 
   let result: T;
   try {

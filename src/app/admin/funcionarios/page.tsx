@@ -33,6 +33,8 @@ function EmployeesContent() {
   const [open, setOpen] = useState(false);
   const [link, setLink] = useState("");
   const [error, setError] = useState("");
+  const [usersError, setUsersError] = useState("");
+  const [invitesError, setInvitesError] = useState("");
   const [employeeToDelete, setEmployeeToDelete] = useState<AppUser>();
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -42,16 +44,26 @@ function EmployeesContent() {
 
   const load = useCallback(async () => {
     if (!profile) return;
-    const [allUsers, result] = await Promise.all([
+    const [allUsers, result] = await Promise.allSettled([
       companyUsers(profile.companyId),
       listInvites(),
     ]);
-    setUsers(allUsers.filter((user) => user.role === "employee"));
-    setInvites(result.invites);
+    if (allUsers.status === "fulfilled") {
+      setUsers(allUsers.value.filter((user) => user.role === "employee"));
+      setUsersError("");
+    } else {
+      setUsersError("Não foi possível carregar os funcionários. Verifique sua conexão e tente novamente.");
+    }
+    if (result.status === "fulfilled") {
+      setInvites(result.value.invites);
+      setInvitesError("");
+    } else {
+      setInvitesError(result.reason instanceof Error ? result.reason.message : "Não foi possível carregar os convites.");
+    }
   }, [profile]);
 
   useEffect(() => {
-    const refresh = () => { void load().catch(() => setError("Não foi possível carregar os funcionários e convites. Tente novamente.")); };
+    const refresh = () => { void load(); };
     refresh();
     const timer = window.setInterval(refresh, 60_000);
     window.addEventListener("focus", refresh);
@@ -113,6 +125,7 @@ function EmployeesContent() {
   return (
     <AppShell title="Funcionários">
       {error && !open && <Alert tone="error">{error}</Alert>}
+      {(usersError || invitesError) && <Button className="secondary" onClick={() => void load()}>Tentar carregar novamente</Button>}
       <div className="metric-grid employees-metrics">
         <StatCard
           icon={<UsersRound />}
@@ -140,7 +153,8 @@ function EmployeesContent() {
             description="Gerencie acessos e acompanhe o status da equipe."
             actions={<Button onClick={() => setOpen(true)}><Plus />Novo convite</Button>}
           />
-          {!users ? <Loading /> : users.length === 0
+          {usersError && <Alert tone="error">{usersError}</Alert>}
+          {!users ? !usersError && <Loading /> : users.length === 0
             ? <Empty title="Nenhum funcionário" description="Crie um convite para adicionar alguém." />
             : (
               <DataTable headers={["Nome", "E-mail", "Status", "Ação"]}>
@@ -171,7 +185,8 @@ function EmployeesContent() {
         </Card>
         <Card>
           <PanelHeader title="Convites" description="Histórico dos convites enviados pela empresa." />
-          {!invites ? <Loading /> : invites.length === 0
+          {invitesError && <Alert tone="error">{invitesError}</Alert>}
+          {!invites ? !invitesError && <Loading /> : invites.length === 0
             ? <Empty title="Nenhum convite" description="Convites enviados aparecem aqui." />
             : (
               <DataTable headers={["E-mail", "Validade", "Status", "Ação"]}>
