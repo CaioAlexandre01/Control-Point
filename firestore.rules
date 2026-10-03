@@ -123,11 +123,18 @@ service cloud.firestore {
         && request.resource.data.used == true
         && request.resource.data.usedAt == request.time
         && request.resource.data.usedBy == request.auth.uid
+        && getAfter(userPath(request.auth.uid)).data.inviteId == inviteId
+        && getAfter(userPath(request.auth.uid)).data.companyId == resource.data.companyId
+        && getAfter(userPath(request.auth.uid)).data.email == resource.data.email
       );
       allow delete: if false;
     }
 
     match /workdays/{workdayId} {
+      // Reading today's absent document is necessary before an employee's first punch.
+      allow get: if isActive()
+        && !exists(/databases/$(database)/documents/workdays/$(workdayId))
+        && workdayId.matches(me().data.companyId + '_' + request.auth.uid + '_[0-9]{4}-[0-9]{2}-[0-9]{2}');
       allow get, list: if isActive() && (
         resource.data.userId == request.auth.uid
         || (isAdmin() && resource.data.companyId == me().data.companyId)

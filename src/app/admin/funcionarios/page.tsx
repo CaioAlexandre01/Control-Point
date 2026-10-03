@@ -2,17 +2,11 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
-  collection,
   doc,
-  getDocs,
-  query,
   serverTimestamp,
-  setDoc,
-  Timestamp,
   updateDoc,
-  where,
 } from "firebase/firestore";
-import { CheckCircle2, Copy, Link2Off, Mail, Plus, Power, Trash2, UsersRound } from "lucide-react";
+import { CheckCircle2, Copy, Link2Off, Mail, Plus, Power, RotateCw, Trash2, UsersRound } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -20,15 +14,13 @@ import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
 import { Alert, Badge, Button, Card, DataTable, Empty, Field, Loading, Modal, PanelHeader, StatCard } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
-import { deleteEmployee } from "@/lib/admin-actions";
+import { createEmployeeInvite, deleteEmployee, listInvites, updateEmployeeInvite, type InviteRow } from "@/lib/admin-actions";
 import { db } from "@/lib/firebase";
 import { companyUsers } from "@/lib/queries";
-import { randomToken } from "@/lib/utils";
 import type { AppUser } from "@/types";
 
 const schema = z.object({ email: z.string().email("E-mail inválido") });
 type Form = z.infer<typeof schema>;
-interface InviteRow { id: string; email: string; active: boolean; used: boolean; expiresAt?: Timestamp }
 
 export default function Employees() {
   return <Protected role="admin"><EmployeesContent /></Protected>;
@@ -44,42 +36,33 @@ function EmployeesContent() {
   const [employeeToDelete, setEmployeeToDelete] = useState<AppUser>();
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [busyInvite, setBusyInvite] = useState("");
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } =
     useForm<Form>({ resolver: zodResolver(schema) });
 
   const load = useCallback(async () => {
     if (!profile) return;
-    const [allUsers, inviteSnapshot] = await Promise.all([
+    const [allUsers, result] = await Promise.all([
       companyUsers(profile.companyId),
-      getDocs(query(
-        collection(db, "invites"),
-        where("companyId", "==", profile.companyId),
-      )),
+      listInvites(),
     ]);
     setUsers(allUsers.filter((user) => user.role === "employee"));
-    setInvites(inviteSnapshot.docs.map((snapshot) => ({
-      id: snapshot.id,
-      ...snapshot.data(),
-    } as InviteRow)).sort((a,b)=>(b.expiresAt?.toMillis()??0)-(a.expiresAt?.toMillis()??0)));
+    setInvites(result.invites);
   }, [profile]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const refresh = () => { void load().catch(() => setError("Não foi possível carregar os funcionários e convites. Tente novamente.")); };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [load]);
 
   async function createInvite(values: Form) {
     if (!profile) return;
     try {
       setError("");
-      const token = randomToken();
-      await setDoc(doc(db, "invites", token), {
-        companyId: profile.companyId,
-        email: values.email.trim().toLowerCase(),
-        role: "employee",
-        token,
-        active: true,
-        used: false,
-        expiresAt: Timestamp.fromMillis(new Date().getTime() + 7 * 86_400_000),
-        createdAt: serverTimestamp(),
-      });
+      const { token } = await createEmployeeInvite(values.email);
       setLink(`${location.origin}/ativar?token=${token}`);
       reset();
       await load();
@@ -89,20 +72,27 @@ function EmployeesContent() {
   }
 
   async function toggleUser(user: AppUser) {
+    try {
     await updateDoc(doc(db, "users", user.uid), {
       active: !user.active,
       updatedAt: serverTimestamp(),
     });
     await load();
+    } catch { setError("Não foi possível alterar o acesso do funcionário."); }
   }
 
-  async function cancelInvite(inviteId: string) {
-    await updateDoc(doc(db, "invites", inviteId), {
-      active: false,
-      canceledAt: serverTimestamp(),
-      canceledBy: profile?.uid,
-    });
-    await load();
+  async function changeInvite(inviteId: string, action: "renew" | "cancel") {
+    setBusyInvite(inviteId);
+    setError("");
+    try {
+      await updateEmployeeInvite(inviteId, action);
+      if (action === "renew") {
+        setLink(`${location.origin}/ativar?token=${inviteId}`);
+        setOpen(true);
+      }
+      await load();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Não foi possível atualizar o convite."); }
+    finally { setBusyInvite(""); }
   }
 
   async function removeEmployee() {
@@ -122,6 +112,7 @@ function EmployeesContent() {
 
   return (
     <AppShell title="Funcionários">
+      {error && !open && <Alert tone="error">{error}</Alert>}
       <div className="metric-grid employees-metrics">
         <StatCard
           icon={<UsersRound />}
@@ -132,7 +123,7 @@ function EmployeesContent() {
         <StatCard
           icon={<Mail />}
           label="Convites pendentes"
-          value={invites?.filter((invite) => invite.active && !invite.used).length ?? "—"}
+          value={invites?.filter((invite) => invite.status === "pending").length ?? "—"}
           description="Aguardando aceite"
         />
         <StatCard
@@ -187,9 +178,12 @@ function EmployeesContent() {
                 {invites.map((invite) => (
                   <tr key={invite.id}>
                     <td>{invite.email}</td>
-                    <td>{invite.expiresAt?.toDate().toLocaleDateString("pt-BR") ?? "—"}</td>
-                    <td><Badge tone={invite.used ? "success" : invite.active ? "warning" : "danger"}>{invite.used ? "Utilizado" : invite.active ? "Pendente" : "Cancelado"}</Badge></td>
-                    <td>{invite.active && !invite.used && <button className="icon-button" onClick={() => cancelInvite(invite.id)} title="Cancelar convite"><Link2Off /></button>}</td>
+                    <td>{invite.expiresAt ? new Date(invite.expiresAt).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }) : "—"}</td>
+                    <td><Badge tone={invite.status === "used" ? "success" : invite.status === "pending" ? "warning" : "danger"}>{{ used: "Utilizado", pending: "Pendente", expired: "Expirado", canceled: "Cancelado" }[invite.status]}</Badge></td>
+                    <td>{!invite.used && <div className="row-actions">
+                      <button className="icon-button" disabled={busyInvite === invite.id} onClick={() => changeInvite(invite.id, "renew")} title="Renovar por 7 dias"><RotateCw /></button>
+                      {invite.active && <button className="icon-button" disabled={busyInvite === invite.id} onClick={() => changeInvite(invite.id, "cancel")} title="Cancelar convite"><Link2Off /></button>}
+                    </div>}</td>
                   </tr>
                 ))}
               </DataTable>
@@ -201,7 +195,7 @@ function EmployeesContent() {
         {error && <Alert tone="error">{error}</Alert>}
         {link ? (
           <div className="invite-link">
-            <p>Convite criado. Validade: 7 dias.</p>
+            <p>Convite válido por 7 dias. Compartilhe este link com o funcionário.</p>
             <code>{link}</code>
             <Button onClick={() => navigator.clipboard.writeText(link)}><Copy />Copiar link</Button>
           </div>

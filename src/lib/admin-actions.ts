@@ -37,6 +37,27 @@ export function deleteEmployee(userId: string) {
   return authenticatedDelete(`/api/admin/funcionarios/${encodeURIComponent(userId)}`);
 }
 
+export interface InviteRow {
+  id: string; email: string; active: boolean; used: boolean; expiresAt: number;
+  status: "used" | "canceled" | "expired" | "pending";
+}
+
+export function listInvites() {
+  return authenticatedRequest<AdminActionResponse & { invites: InviteRow[] }>("/api/admin/convites", { cache: "no-store" });
+}
+
+export function createEmployeeInvite(email: string) {
+  return authenticatedRequest<AdminActionResponse & { token: string }>("/api/admin/convites", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }),
+  });
+}
+
+export function updateEmployeeInvite(token: string, action: "renew" | "cancel") {
+  return authenticatedRequest<AdminActionResponse & { ok: boolean }>("/api/admin/convites", {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, action }),
+  });
+}
+
 export type SystemResetMode = "hours" | "all";
 
 interface SystemResetResponse extends AdminActionResponse {

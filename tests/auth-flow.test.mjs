@@ -42,7 +42,11 @@ async function provider() {
     },
     'firebase/firestore': {
       doc: (_, collection, uid) => uid,
-      getDoc: uid => { const read = deferred(); reads.push({ uid, ...read }); return read.promise; },
+      onSnapshot: (uid, resolve, reject) => {
+        const read = { uid, resolve, reject, unsubscribed: false };
+        reads.push(read);
+        return () => { read.unsubscribed = true; };
+      },
     },
   });
   const tree = components.AuthProvider({ children: null });
@@ -99,6 +103,28 @@ test('restored session waits for Firebase and profile, keeping local persistence
   await pending;
   assert.equal(app.state().profile.uid, 'saved');
   assert.deepEqual(destination(app.state(), 'login'), ['/ponto']);
+});
+
+test('profile created after signup updates the session without another login', async () => {
+  const app = await provider();
+  await app.emit({ uid: 'new' });
+  app.reads[0].resolve({ exists: () => false });
+  assert.equal(app.state().profile, null);
+  app.reads[0].resolve(snapshot('new'));
+  assert.equal(app.state().profile.uid, 'new');
+  assert.equal(app.state().authError, '');
+  assert.deepEqual(destination(app.state()), []);
+  await app.logout();
+  assert.equal(app.reads[0].unsubscribed, true);
+});
+
+test('disabled access is reflected in an already signed-in session', async () => {
+  const app = await provider();
+  await app.emit({ uid: 'employee' });
+  app.reads[0].resolve(snapshot('employee'));
+  app.reads[0].resolve({ exists: () => true, id: 'employee', data: () => ({ active: false, role: 'employee' }) });
+  assert.equal(app.state().profile.active, false);
+  assert.deepEqual(destination(app.state(), 'login'), []);
 });
 test('logout clears session and late profile cannot restore it; anonymous route goes to login', async () => {
   const app = await provider();

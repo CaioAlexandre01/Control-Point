@@ -1,7 +1,7 @@
 "use client";
 
 import { browserLocalPersistence, onAuthStateChanged, setPersistence, signOut, type User } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, onSnapshot } from "firebase/firestore";
 import { createContext, useContext, useEffect, useState } from "react";
 import { auth, db } from "@/lib/firebase";
 import type { AppUser } from "@/types";
@@ -19,19 +19,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let active = true;
     let revision = 0;
     let unsubscribe = () => {};
+    let unsubscribeProfile = () => {};
 
     setPersistence(auth, browserLocalPersistence).then(() => {
       if (!active) return;
-      unsubscribe = onAuthStateChanged(auth, async (user) => {
+      unsubscribe = onAuthStateChanged(auth, (user) => {
         const currentRevision = ++revision;
         const isCurrent = () => active && currentRevision === revision;
+        unsubscribeProfile();
+        unsubscribeProfile = () => {};
 
         // A new session is not ready until its application profile has loaded.
         setState({ firebaseUser: user, profile: null, loading: !!user, authError: "" });
         if (!user) return;
 
-        try {
-          const snapshot = await getDoc(doc(db, "users", user.uid));
+        // Account creation signs in before the profile transaction completes.
+        // Keep listening so a missing profile can become ready without a reload.
+        unsubscribeProfile = onSnapshot(doc(db, "users", user.uid), (snapshot) => {
           if (!isCurrent()) return;
           setState({
             firebaseUser: user,
@@ -39,11 +43,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             loading: false,
             authError: snapshot.exists() ? "" : "Perfil não encontrado. Procure o administrador.",
           });
-        } catch {
+        }, () => {
           if (isCurrent()) {
             setState({ firebaseUser: user, profile: null, loading: false, authError: "Não foi possível carregar seu perfil. Tente entrar novamente." });
           }
-        }
+        });
       });
     }).catch(() => {
       if (active) setState({ ...initialState, loading: false, authError: "Não foi possível inicializar a sessão. Atualize a página e tente novamente." });
@@ -53,6 +57,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       active = false;
       revision++;
       unsubscribe();
+      unsubscribeProfile();
     };
   }, []);
 

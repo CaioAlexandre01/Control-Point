@@ -4,7 +4,7 @@ import { Clock3, Coffee, LogOut, UserCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
-import { Badge, Card, DataTable, Loading, PanelHeader, StatCard } from "@/components/ui";
+import { Alert, Badge, Card, DataTable, Loading, PanelHeader, StatCard } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { companyUsers, companyWorkdays } from "@/lib/queries";
 import { saoPauloDate } from "@/lib/utils";
@@ -18,16 +18,17 @@ function AdminInner() {
   const { profile } = useAuth();
   const [users, setUsers] = useState<AppUser[]>();
   const [days, setDays] = useState<Workday[]>();
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (!profile) return;
     Promise.all([
       companyUsers(profile.companyId),
-      companyWorkdays(profile.companyId, 20),
+      companyWorkdays(profile.companyId, Infinity),
     ]).then(([userRows, workdayRows]) => {
       setUsers(userRows);
       setDays(workdayRows);
-    });
+    }).catch(() => setError("Não foi possível carregar o painel. Atualize a página e tente novamente."));
   }, [profile]);
 
   const today = useMemo(() => days?.filter((day) => day.date === saoPauloDate()) ?? [], [days]);
@@ -40,7 +41,7 @@ function AdminInner() {
 
   return (
     <AppShell title="Visão geral">
-      {!users || !days ? <Loading /> : (
+      {error ? <Alert tone="error">{error}</Alert> : !users || !days ? <Loading /> : (
         <>
           <div className="metric-grid">
             <StatCard icon={<UserCheck />} label="Funcionários ativos" value={employeeCount} description="Colaboradores com acesso" />
@@ -71,7 +72,7 @@ function AdminInner() {
               <PanelHeader title="Sem registro hoje" description="Funcionários que ainda não iniciaram a jornada." />
               <div className="missing-list">
                 {users
-                  .filter((user) => user.role === "employee" && !today.some((day) => day.userId === user.uid))
+                  .filter((user) => user.active && user.role === "employee" && !today.some((day) => day.userId === user.uid))
                   .slice(0, 8)
                   .map((user) => (
                     <div key={user.uid}>

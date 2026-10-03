@@ -10,6 +10,7 @@ import { z } from "zod";
 import { auth, db } from "@/lib/firebase";
 import { Alert, Button, Card, Field, Loading } from "@/components/ui";
 import { randomToken } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
 const schema = z.object({
   companyName: z.string().min(2, "Informe o nome da empresa"),
@@ -45,8 +46,14 @@ export default function Setup() {
   const [blocked, setBlocked] = useState(false);
   const [error, setError] = useState("");
   const router = useRouter();
+  const { profile, loading } = useAuth();
+  const [completed, setCompleted] = useState(false);
   const { register, handleSubmit, formState: { errors, isSubmitting } } =
     useForm<Form>({ resolver: zodResolver(schema), defaultValues: { radiusMeters: 100 } });
+
+  useEffect(() => {
+    if (completed && !loading && profile?.active && profile.role === "admin") router.replace("/admin");
+  }, [completed, loading, profile, router]);
 
   useEffect(() => {
     getDoc(doc(db, "system", "config"))
@@ -97,7 +104,8 @@ export default function Setup() {
         createdAt: serverTimestamp(),
       });
       await batch.commit();
-      router.replace("/admin");
+      createdUser = null;
+      setCompleted(true);
     } catch (caught) {
       if (createdUser) {
         try { await deleteUser(createdUser); } catch { /* Firebase may require a recent login. */ }
@@ -106,7 +114,7 @@ export default function Setup() {
     }
   }
 
-  if (checking) return <Loading />;
+  if (checking || completed) return <Loading />;
   if (blocked) {
     return (
       <div className="center-page">

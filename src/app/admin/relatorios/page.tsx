@@ -4,7 +4,7 @@ import { Download } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
-import { Button, Card, DataTable, Empty, Loading, PageHeader } from "@/components/ui";
+import { Alert, Button, Card, DataTable, Empty, Loading, PageHeader } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { companyUsers, companyWorkdays, exportCsv, minutesText } from "@/lib/queries";
 import { saoPauloDate } from "@/lib/utils";
@@ -18,6 +18,7 @@ function ReportsContent() {
   const { profile } = useAuth();
   const [users, setUsers] = useState<AppUser[]>();
   const [rows, setRows] = useState<Workday[]>();
+  const [error, setError] = useState("");
   const [mode, setMode] = useState<"daily" | "monthly">("monthly");
   const [reference, setReference] = useState(() => saoPauloDate().slice(0, 7));
 
@@ -25,11 +26,11 @@ function ReportsContent() {
     if (!profile) return;
     Promise.all([
       companyUsers(profile.companyId),
-      companyWorkdays(profile.companyId, 500),
+      companyWorkdays(profile.companyId, Infinity),
     ]).then(([companyUserRows, workdays]) => {
       setUsers(companyUserRows);
       setRows(workdays);
-    });
+    }).catch(() => setError("Não foi possível carregar os relatórios. Atualize a página e tente novamente."));
   }, [profile]);
 
   const filtered = useMemo(
@@ -92,7 +93,7 @@ function ReportsContent() {
             <Button onClick={downloadCsv} disabled={!summary.length}><Download />Exportar CSV</Button>
           </div>
         </div>
-        {!rows || !users ? <Loading /> : summary.length === 0
+        {error ? <Alert tone="error">{error}</Alert> : !rows || !users ? <Loading /> : summary.length === 0
           ? <Empty title="Sem dados no período" description="Escolha outra data para consultar." />
           : (
             <DataTable headers={["Funcionário", "Dias", "Folgas", "Trabalhado", "Intervalo", "Horas extras"]}>

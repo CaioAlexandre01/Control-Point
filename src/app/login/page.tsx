@@ -1,7 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { Clock3, Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -32,7 +32,9 @@ export default function Login() {
   const { firebaseUser, profile, loading, authError } = useAuth();
   const [error, setError] = useState("");
   const [show, setShow] = useState(false);
-  const { register, handleSubmit, formState: { errors, isSubmitting } } =
+  const [resetting, setResetting] = useState(false);
+  const [notice, setNotice] = useState("");
+  const { register, handleSubmit, getValues, formState: { errors, isSubmitting } } =
     useForm<Form>({ resolver: zodResolver(schema) });
 
   useEffect(() => {
@@ -75,6 +77,26 @@ export default function Login() {
     }
   }
 
+  async function recoverPassword() {
+    const email = getValues("email").trim().toLowerCase();
+    if (!z.string().email().safeParse(email).success) {
+      setError("Informe seu e-mail acima para recuperar a senha.");
+      return;
+    }
+    setResetting(true);
+    setError("");
+    setNotice("");
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setNotice("Se houver uma conta com esse e-mail, você receberá um link para redefinir sua senha. Confira também o spam.");
+    } catch (caught) {
+      const code = caught && typeof caught === "object" && "code" in caught ? String(caught.code) : "";
+      if (code === "auth/user-not-found") {
+        setNotice("Se houver uma conta com esse e-mail, você receberá um link para redefinir sua senha. Confira também o spam.");
+      } else setError(authErrors[code] || "Não foi possível enviar a recuperação. Tente novamente.");
+    } finally { setResetting(false); }
+  }
+
   if (setupStatus === "error") return (
     <div className="center-page">
       <div>
@@ -103,6 +125,7 @@ export default function Login() {
       <form className="auth-card" onSubmit={handleSubmit(submit)}>
         <div><h2>Bem-vindo</h2><p>Entre com suas credenciais</p></div>
         {(error || authError) && <Alert tone="error">{error || authError}</Alert>}
+        {notice && <Alert tone="success">{notice}</Alert>}
         <Field
           label="E-mail"
           type="email"
@@ -125,6 +148,7 @@ export default function Login() {
           </button>
         </div>
         <Button loading={isSubmitting}>Entrar</Button>
+        <Button type="button" className="secondary" loading={resetting} onClick={recoverPassword}>Esqueci minha senha</Button>
         <small>Sem acesso? Solicite um convite ao administrador.</small>
       </form>
     </div>

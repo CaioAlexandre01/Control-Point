@@ -80,8 +80,26 @@ Abra `/setup` para criar a empresa e o primeiro administrador. Depois disso, o s
 ```bash
 npm run typecheck
 npm run lint
+npm test
 npm run build
 ```
+
+Para testar as APIs reais com Authentication e Firestore isolados (requer Java 21+):
+
+```bash
+npm run test:integration
+```
+
+Os testes usam exclusivamente o projeto fictício `demo-ponto-uau`, os emuladores locais e a porta 3107 para o Next.js. Cobrem criação/renovação de convites, expiração no servidor, cadastro interrompido, repetição e concorrência, login, permissões e a sequência completa de ponto. Nenhum funcionário real é criado ou alterado.
+
+## Convites e recuperação de acesso
+
+- A validade de sete dias é calculada no servidor, independentemente do relógio do celular.
+- A ativação cria o perfil e consome o convite na mesma transação. Repetir a requisição após uma falha de conexão é seguro.
+- A sessão acompanha a criação do perfil antes de abrir a página de ponto.
+- No painel de funcionários, **Renovar por 7 dias** mantém o mesmo link para um convite ainda não utilizado.
+- Um convite utilizado direciona para o login. **Esqueci minha senha** recupera uma conta já criada.
+- As rotas de convites precisam das mesmas variáveis `FIREBASE_ADMIN_*` usadas pelo registro de ponto.
 
 ## Limitações do MVP
 
