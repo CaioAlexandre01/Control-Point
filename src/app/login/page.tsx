@@ -12,6 +12,7 @@ import { auth, db } from "@/lib/firebase";
 import { Alert, Button, Field, Loading } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AppUser } from "@/types";
+import { useInitialSetup } from "@/lib/use-initial-setup";
 
 const schema = z.object({
   email: z.string().email("Informe um e-mail válido"),
@@ -27,6 +28,7 @@ const authErrors: Record<string, string> = {
 
 export default function Login() {
   const router = useRouter();
+  const setupStatus = useInitialSetup();
   const { firebaseUser, profile, loading, authError } = useAuth();
   const [error, setError] = useState("");
   const [show, setShow] = useState(false);
@@ -34,10 +36,15 @@ export default function Login() {
     useForm<Form>({ resolver: zodResolver(schema) });
 
   useEffect(() => {
+    if (setupStatus === "required") {
+      router.replace("/setup");
+      return;
+    }
+    if (setupStatus !== "ready") return;
     if (!loading && !isSubmitting && firebaseUser && profile?.active) {
       router.replace(profile.role === "admin" ? "/admin" : "/ponto");
     }
-  }, [loading, isSubmitting, firebaseUser, profile, router]);
+  }, [setupStatus, loading, isSubmitting, firebaseUser, profile, router]);
 
   async function submit(values: Form) {
     try {
@@ -68,7 +75,15 @@ export default function Login() {
     }
   }
 
-  if (loading || (firebaseUser && profile?.active)) return <Loading />;
+  if (setupStatus === "error") return (
+    <div className="center-page">
+      <div>
+        <Alert tone="error">Não foi possível verificar a configuração inicial. Verifique sua conexão e tente novamente.</Alert>
+        <Button onClick={() => window.location.reload()}>Tentar novamente</Button>
+      </div>
+    </div>
+  );
+  if (setupStatus !== "ready" || loading || (firebaseUser && profile?.active)) return <Loading />;
 
   return (
     <div className="auth-page">

@@ -50,12 +50,13 @@ async function provider() {
   return { state: () => state, emit: user => listener(user), reads, cleanup, logout: tree.props.value.logout, persistence };
 }
 const snapshot = (uid, role = 'employee') => ({ exists: () => true, id: uid, data: () => ({ active: true, role }) });
-function destination(state, component = 'protected', isSubmitting = false, role) {
+function destination(state, component = 'protected', isSubmitting = false, role, setupStatus = 'ready') {
   const routes = [];
   const mocks = {
     react: { useEffect: effect => effect(), useState: () => ['', () => {}] },
     'next/navigation': { useRouter: () => ({ replace: route => routes.push(route) }) },
     '@/contexts/AuthContext': { useAuth: () => state },
+    '@/lib/use-initial-setup': { useInitialSetup: () => setupStatus },
     './ui': { Loading: 'loading' },
   };
   if (component === 'protected') {
@@ -143,4 +144,40 @@ test('inactive profiles do not redirect from login and role restrictions remain 
   assert.deepEqual(destination(state, 'login'), []);
   state.profile.active = true;
   assert.deepEqual(destination(state, 'protected', false, 'admin'), ['/ponto']);
+});
+
+test('login sends an unconfigured system to setup, including a stale admin session', () => {
+  for (const state of [
+    { firebaseUser: null, profile: null, loading: false },
+    { firebaseUser: { uid: 'old' }, profile: { active: true, role: 'admin' }, loading: false },
+  ]) {
+    assert.deepEqual(destination(state, 'login', false, undefined, 'required'), ['/setup']);
+    assert.deepEqual(destination(state, 'login', false, undefined, 'checking'), []);
+    assert.deepEqual(destination(state, 'login', false, undefined, 'error'), []);
+  }
+});
+
+test('setup detection reads the server and distinguishes missing config from read failures', async () => {
+  for (const outcome of ['missing', 'configured', 'offline', 'unmounted']) {
+    let status, cleanup;
+    const read = deferred();
+    const { useInitialSetup: runSetupHook } = load('src/lib/use-initial-setup.ts', {
+      react: {
+        useState: initial => { status = initial; return [status, next => { status = next; }]; },
+        useEffect: effect => { cleanup = effect(); },
+      },
+      '@/lib/firebase': { db: {} },
+      'firebase/firestore': {
+        doc: (_, collection, id) => { assert.equal(`${collection}/${id}`, 'system/config'); return 'config'; },
+        getDocFromServer: () => read.promise,
+      },
+    });
+    assert.equal(runSetupHook(), 'checking');
+    if (outcome === 'unmounted') cleanup();
+    if (outcome === 'offline') read.reject(new Error('offline'));
+    else read.resolve({ exists: () => outcome === 'configured' });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(status, { missing: 'required', configured: 'ready', offline: 'error', unmounted: 'checking' }[outcome]);
+  }
 });

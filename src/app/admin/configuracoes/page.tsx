@@ -2,7 +2,6 @@
 
 import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { Building2, ClockArrowDown, DatabaseZap, MapPin, RotateCcw } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
@@ -18,7 +17,6 @@ export default function Settings() {
 
 function SettingsContent() {
   const { profile, logout } = useAuth();
-  const router = useRouter();
   const [company, setCompany] = useState<Company>();
   const [saved, setSaved] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
@@ -62,7 +60,7 @@ function SettingsContent() {
       const result = await resetSystem(resetMode);
       if (resetMode === "all") {
         await logout().catch(() => undefined);
-        router.replace("/setup");
+        window.location.replace("/setup");
         return;
       }
       setResetMessage(
