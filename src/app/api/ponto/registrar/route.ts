@@ -1,3 +1,4 @@
+import { PunchConflict, savePunch } from "../../../../../functions/src/punch-service";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase-admin";
@@ -18,6 +19,8 @@ interface PunchBody {
   accuracy: number;
   clientTimestamp: number;
   userAgent: string;
+  requestId?: string;
+  expectedWorkdayId?: string | null;
 }
 
 class ApiError extends Error {
@@ -48,17 +51,6 @@ function saoPauloDate(date = new Date()) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
-function expectedEvent(workday?: FirebaseFirestore.DocumentData): EventType | null {
-  if (workday?.status === "day_off") return null;
-  if (!workday?.clockInAt) return "clock_in";
-  if (workday.status === "finished" || workday.clockOutAt) return null;
-  if (workday.status === "on_break" && workday.breakStartAt && !workday.breakEndAt) {
-    return "break_end";
-  }
-  if (workday.breakEndAt) return "clock_out";
-  return "break_start";
-}
-
 function validateBody(value: unknown): PunchBody {
   if (!value || typeof value !== "object") throw new ApiError(400, "Dados do registro inválidos.");
   const body = value as Partial<PunchBody>;
@@ -82,7 +74,15 @@ function validateBody(value: unknown): PunchBody {
   ) {
     throw new ApiError(400, "Coordenadas ou precisão inválidas.");
   }
+  if (body.requestId !== undefined && (typeof body.requestId !== "string" || !/^[a-zA-Z0-9-]{16,80}$/.test(body.requestId))) {
+    throw new ApiError(400, "Identificador de registro inválido.");
+  }
+  if (body.expectedWorkdayId !== undefined && body.expectedWorkdayId !== null && (typeof body.expectedWorkdayId !== "string" || body.expectedWorkdayId.includes("/"))) {
+    throw new ApiError(400, "Turno inválido.");
+  }
   return {
+    requestId: body.requestId,
+    expectedWorkdayId: body.expectedWorkdayId,
     companyId: body.companyId,
     type: body.type,
     qrCodeId: body.qrCodeId,
@@ -168,95 +168,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const date = saoPauloDate();
-    const workdayRef = db.doc(`workdays/${data.companyId}_${decodedToken.uid}_${date}`);
-    const eventRef = workdayRef.collection("events").doc();
-    const serverNow = Timestamp.now();
-
-    await db.runTransaction(async (transaction) => {
-      const workdaySnapshot = await transaction.get(workdayRef);
-      const current = workdaySnapshot.exists ? workdaySnapshot.data() : undefined;
-      if (
-        current
-        && (
-          current.userId !== decodedToken.uid
-          || current.companyId !== data.companyId
-          || current.date !== date
-        )
-      ) {
-        throw new ApiError(409, "A jornada existente não pertence ao funcionário autenticado.");
-      }
-      const expected = expectedEvent(current);
-      if (expected === null) throw new ApiError(409, "A jornada de hoje já foi encerrada.");
-      if (expected !== data.type) {
-        throw new ApiError(409, "Esta não é a próxima ação permitida da jornada.");
-      }
-
-      const timestampField: Record<EventType, string> = {
-        clock_in: "clockInAt",
-        break_start: "breakStartAt",
-        break_end: "breakEndAt",
-        clock_out: "clockOutAt",
-      };
-      const update: Record<string, unknown> = {
-        companyId: data.companyId,
-        userId: decodedToken.uid,
-        employeeName: typeof user.name === "string" ? user.name : "Funcionário",
-        date,
-        [timestampField[data.type]]: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      };
-
-      if (data.type === "clock_in") {
-        Object.assign(update, {
-          status: "working",
-          createdAt: FieldValue.serverTimestamp(),
-          totalWorkedMinutes: 0,
-          totalBreakMinutes: 0,
-        });
-      } else if (data.type === "break_start") {
-        update.status = "on_break";
-      } else if (data.type === "break_end") {
-        update.status = "working";
-      } else {
-        update.status = "finished";
-        const clockIn = current?.clockInAt as Timestamp;
-        const breakStart = current?.breakStartAt as Timestamp | undefined;
-        const breakEnd = current?.breakEndAt as Timestamp | undefined;
-        const breakMilliseconds = breakStart && breakEnd
-          ? breakEnd.toMillis() - breakStart.toMillis()
-          : 0;
-        update.totalBreakMinutes = Math.max(0, Math.round(breakMilliseconds / 60_000));
-        update.totalWorkedMinutes = Math.max(
-          0,
-          Math.round((serverNow.toMillis() - clockIn.toMillis() - breakMilliseconds) / 60_000),
-        );
-      }
-
-      transaction.set(workdayRef, update, { merge: true });
-      transaction.set(eventRef, {
-        companyId: data.companyId,
-        userId: decodedToken.uid,
-        type: data.type,
-        officialTimestamp: FieldValue.serverTimestamp(),
-        clientTimestamp: Timestamp.fromMillis(data.clientTimestamp),
-        latitude: data.latitude,
-        longitude: data.longitude,
-        accuracy: data.accuracy,
-        distanceMeters,
-        qrCodeId: data.qrCodeId,
-        userAgent: data.userAgent,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-    });
-
-    const eventSnapshot = await eventRef.get();
-    const officialTimestamp = eventSnapshot.get("officialTimestamp") as Timestamp;
-    return NextResponse.json({
-      officialTimestampMillis: officialTimestamp.toMillis(),
-      workdayDate: date,
-    });
+    const result = await savePunch(db, decodedToken.uid, data, distanceMeters, { FieldValue, Timestamp });
+    return NextResponse.json(result);
   } catch (caught) {
+    if (caught instanceof PunchConflict) return NextResponse.json({ error: caught.message }, { status: 409 });
     if (caught instanceof ApiError) {
       return NextResponse.json({ error: caught.message }, { status: caught.status });
     }

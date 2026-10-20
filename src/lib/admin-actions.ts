@@ -37,6 +37,17 @@ export function deleteWorkday(workdayId: string) {
   return authenticatedDelete(`/api/admin/registros/${encodeURIComponent(workdayId)}`);
 }
 
+export function correctWorkday(workdayId: string, correction: {
+  mode: "active" | "day_off";
+  times?: Record<string, number | null>;
+  reason: string;
+  expectedUpdatedAt: number | null;
+}) {
+  return authenticatedRequest<AdminActionResponse>(`/api/admin/registros/${encodeURIComponent(workdayId)}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(correction),
+  });
+}
+
 export function deleteEmployee(userId: string) {
   return authenticatedDelete(`/api/admin/funcionarios/${encodeURIComponent(userId)}`);
 }

@@ -19,7 +19,7 @@ export async function companyWorkdays(companyId: string, max = 100, date?: strin
   return snapshot.docs
     .map((document) => ({ ...document.data(), id: document.id } as Workday))
     .filter((workday) => workday.companyId === companyId)
-    .sort((a, b) => b.date.localeCompare(a.date))
+    .sort((a, b) => b.date.localeCompare(a.date) || (b.clockInAt?.toMillis() ?? 0) - (a.clockInAt?.toMillis() ?? 0))
     .slice(0, max);
 }
 
@@ -32,7 +32,7 @@ export async function userWorkdays(companyId: string, userId: string, max = 100)
   return snapshot.docs
     .map((document) => ({ ...document.data(), id: document.id } as Workday))
     .filter((workday) => workday.companyId === companyId && workday.userId === userId)
-    .sort((a, b) => b.date.localeCompare(a.date))
+    .sort((a, b) => b.date.localeCompare(a.date) || (b.clockInAt?.toMillis() ?? 0) - (a.clockInAt?.toMillis() ?? 0))
     .slice(0, max);
 }
 

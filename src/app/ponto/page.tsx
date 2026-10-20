@@ -17,7 +17,8 @@ import {
   validateLocationAccuracy,
   type CurrentLocation,
 } from "@/lib/point-permissions";
-import { brTime, haversine } from "@/lib/utils";
+import { punchTimeText } from "@/lib/punch-time";
+import { haversine } from "@/lib/utils";
 import { getWorkday, nextEvent, registerPunch } from "@/lib/workday";
 import type { Company, EventType, Validation, Workday } from "@/types";
 
@@ -41,16 +42,6 @@ const punchLabels: Array<{ field: PunchField; label: string }> = [
   { field: "breakEndAt", label: "Retorno" },
   { field: "clockOutAt", label: "Saída" },
 ];
-
-function punchTime(value?: Timestamp) {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("pt-BR", {
-    timeZone: "America/Sao_Paulo",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(value.toDate());
-}
 
 async function prepareQrImage(file: File): Promise<File | HTMLCanvasElement> {
   if (typeof createImageBitmap !== "function") return file;
@@ -101,6 +92,8 @@ export default function Ponto() {
 function PontoContent() {
   const { firebaseUser, profile } = useAuth();
   const [workday, setWorkday] = useState<Workday>();
+  const [loadingWorkday, setLoadingWorkday] = useState(true);
+  const punchInFlight = useRef(false);
   const [workdayLoadFailed, setWorkdayLoadFailed] = useState(false);
   const [validation, setValidation] = useState<Validation>();
   const [feedback, setFeedback] = useState<{ text: string; error?: boolean; info?: boolean }>();
@@ -125,10 +118,11 @@ function PontoContent() {
   const scanWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
   const decoderErrorShown = useRef(false);
   const nextActionRef = useRef<HTMLDivElement | null>(null);
-  const next = workdayLoadFailed ? null : nextEvent(workday);
+  const next = workdayLoadFailed || loadingWorkday ? null : nextEvent(workday);
 
   const load = useCallback(async () => {
     if (!firebaseUser || !profile) return;
+    setLoadingWorkday(true);
     setWorkdayLoadFailed(false);
     try {
       setWorkday(await getWorkday(firebaseUser.uid, profile.companyId));
@@ -139,6 +133,8 @@ function PontoContent() {
         text: caught instanceof Error ? caught.message : "Não foi possível carregar sua jornada.",
         error: true,
       });
+    } finally {
+      setLoadingWorkday(false);
     }
   }, [firebaseUser, profile]);
 
@@ -465,10 +461,11 @@ function PontoContent() {
   }
 
   async function punch() {
-    if (!firebaseUser || !profile || !validation || !next) return;
+    if (!firebaseUser || !profile || !validation || !next || punchInFlight.current) return;
+    punchInFlight.current = true;
     try {
       setSaving(true);
-      const result = await registerPunch(firebaseUser.uid, profile.companyId, next, validation);
+      const result = await registerPunch(firebaseUser.uid, profile.companyId, next, validation, workday?.clockInAt && !workday.clockOutAt ? workday.id : null);
       setWorkday(result.workday);
       setValidation(undefined);
       clearRequiredLocation();
@@ -476,7 +473,7 @@ function PontoContent() {
       setOfficialTime(result.officialTimestamp);
       setFeedback({
         text: result.officialTimestamp
-          ? `Registro confirmado às ${brTime(result.officialTimestamp.toDate())}.`
+          ? `Registro confirmado às ${punchTimeText(result.officialTimestamp, result.workday.date)}.`
           : "Registro confirmado com o horário oficial.",
       });
     } catch (caught) {
@@ -489,13 +486,14 @@ function PontoContent() {
       });
       await load();
     } finally {
+      punchInFlight.current = false;
       setSaving(false);
     }
   }
 
   const visibleLocation = validation ?? requiredLocation;
   const permissionFlowBusy = isRequestingLocation || isOpeningCamera;
-  const nextActionLabel = workdayLoadFailed
+  const nextActionLabel = loadingWorkday ? "Carregando jornada..." : workdayLoadFailed
     ? "Jornada indisponível"
     : workday?.status === "day_off" ? "Folga programada" : next ? actionLabels[next] : "Jornada concluída";
 
@@ -603,7 +601,7 @@ function PontoContent() {
 
         <Card className="today-punches">
           <div className="today-punches-title">
-            <h3>Batidas de hoje</h3>
+            <h3>Batidas do turno</h3>
             <span>{workday?.date ? workday.date.split("-").reverse().join("/") : new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo" }).format(new Date())}</span>
           </div>
           <div className="punch-mini-table">
@@ -612,7 +610,7 @@ function PontoContent() {
               return (
                 <div key={field} className={value ? "registered" : ""}>
                   <span>{label}</span>
-                  <strong>{punchTime(value)}</strong>
+                  <strong>{punchTimeText(value, workday?.date)}</strong>
                   <small>{value ? "Registrado" : "Pendente"}</small>
                 </div>
               );

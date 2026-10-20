@@ -140,17 +140,12 @@ service cloud.firestore {
         || (isAdmin() && resource.data.companyId == me().data.companyId)
       );
 
-      // Employees register only through the authenticated Cloud Function.
+      // Employees register only through the authenticated API or Cloud Function.
       // The Admin SDK revalidates user, company, QR, GPS and sequence.
       allow create: if false;
 
-      allow update: if isAdmin()
-        && resource.data.companyId == me().data.companyId
-        && request.resource.data.companyId == resource.data.companyId
-        && request.resource.data.userId == resource.data.userId
-        && request.resource.data.correctionAuditId is string
-        && getAfter(/databases/$(database)/documents/auditLogs/$(request.resource.data.correctionAuditId)).data.workdayId == workdayId
-        && getAfter(/databases/$(database)/documents/auditLogs/$(request.resource.data.correctionAuditId)).data.adminId == request.auth.uid;
+      // Corrections use the authenticated API and the same employee lock as punches.
+      allow update: if false;
       allow delete: if false;
 
       match /events/{eventId} {

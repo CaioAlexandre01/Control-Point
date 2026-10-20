@@ -1,14 +1,16 @@
 "use client";
 
-import { LoaderCircle, X } from "lucide-react";
+import { Inbox, LoaderCircle, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button as BaseButton } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export function Button({ className, loading, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean }) {
   return (
-    <button className={cn("button", className)} disabled={props.disabled || loading} {...props}>
+    <BaseButton className={className} disabled={props.disabled || loading} {...props}>
       {loading && <LoaderCircle size={16} className="spin" />}
       {props.children}
-    </button>
+    </BaseButton>
   );
 }
 
@@ -25,11 +27,19 @@ export function Badge({ children, tone = "neutral" }: { children: React.ReactNod
 }
 
 export function Empty({ title, description }: { title: string; description: string }) {
-  return <div className="empty"><div>—</div><strong>{title}</strong><span>{description}</span></div>;
+  return <div className="empty"><div><Inbox size={20} aria-hidden="true" /></div><strong>{title}</strong><span>{description}</span></div>;
 }
 
 export function Loading() {
-  return <div className="loading"><LoaderCircle className="spin" />Carregando…</div>;
+  return (
+    <div className="loading-layout" role="status" aria-label="Carregando">
+      <span className="sr-only">Carregando…</span>
+      <div className="loading-heading" aria-hidden="true"><Skeleton /><Skeleton /></div>
+      <div className="loading-rows" aria-hidden="true">
+        {Array.from({ length: 5 }, (_, index) => <Skeleton key={index} />)}
+      </div>
+    </div>
+  );
 }
 
 export function Alert({ children, tone = "info" }: { children: React.ReactNode; tone?: "info" | "error" | "success" }) {

@@ -8,6 +8,7 @@ import { Alert, Badge, Card, DataTable, Loading, PanelHeader, StatCard } from "@
 import { useAuth } from "@/contexts/AuthContext";
 import { companyUsers, companyWorkdays } from "@/lib/queries";
 import { saoPauloDate } from "@/lib/utils";
+import { isOpenShift } from "../../../functions/src/workday-state";
 import type { AppUser, Workday } from "@/types";
 
 export default function Admin() {
@@ -33,10 +34,11 @@ function AdminInner() {
 
   const today = useMemo(() => days?.filter((day) => day.date === saoPauloDate()) ?? [], [days]);
   const employeeCount = users?.filter((user) => user.role === "employee" && user.active).length ?? 0;
+  const open = days?.filter(isOpenShift) ?? [];
   const counts = {
-    working: today.filter((day) => day.status === "working").length,
-    onBreak: today.filter((day) => day.status === "on_break").length,
-    finished: today.filter((day) => day.status === "finished").length,
+    working: open.filter((day) => day.status === "working").length,
+    onBreak: open.filter((day) => day.status === "on_break").length,
+    finished: days?.filter((day) => day.clockOutAt && saoPauloDate(day.clockOutAt.toDate()) === saoPauloDate()).length ?? 0,
   };
 
   return (
@@ -46,7 +48,7 @@ function AdminInner() {
           <div className="metric-grid">
             <StatCard icon={<UserCheck />} label="Funcionários ativos" value={employeeCount} description="Colaboradores com acesso" />
             <StatCard icon={<Clock3 />} label="Trabalhando agora" value={counts.working} description="Jornadas em andamento" />
-            <StatCard icon={<Coffee />} label="Em intervalo" value={counts.onBreak} description="Pausas registradas hoje" />
+            <StatCard icon={<Coffee />} label="Em intervalo" value={counts.onBreak} description="Pausas em andamento" />
             <StatCard icon={<LogOut />} label="Jornada encerrada" value={counts.finished} description="Expedientes concluídos" />
           </div>
 
@@ -72,7 +74,7 @@ function AdminInner() {
               <PanelHeader title="Sem registro hoje" description="Funcionários que ainda não iniciaram a jornada." />
               <div className="missing-list">
                 {users
-                  .filter((user) => user.active && user.role === "employee" && !today.some((day) => day.userId === user.uid))
+                  .filter((user) => user.active && user.role === "employee" && !today.some((day) => day.userId === user.uid) && !open.some((day) => day.userId === user.uid))
                   .slice(0, 8)
                   .map((user) => (
                     <div key={user.uid}>

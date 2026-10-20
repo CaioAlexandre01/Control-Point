@@ -1,3 +1,4 @@
+import { testOvernight } from "./overnight.emulator.mjs";
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { initializeApp as adminApp, deleteApp as deleteAdminApp } from 'firebase-admin/app';
@@ -188,10 +189,20 @@ try {
     const batch = writeBatch(admin.store);
     batch.set(doc(admin.store, 'auditLogs', auditId), { companyId, adminId: admin.user.uid, workdayId: id, reason: 'Correção de teste', createdAt: serverTimestamp() });
     batch.update(doc(admin.store, 'workdays', id), { correctionAuditId: auditId, totalWorkedMinutes: 480, updatedAt: serverTimestamp() });
-    await batch.commit();
-    assert.equal((await getDocFromServer(doc(admin.store, 'workdays', id))).get('totalWorkedMinutes'), 480);
+    await assert.rejects(batch.commit(), /permission|PERMISSION/i);
+    const current = (await db.doc(`workdays/${id}`).get()).data();
+    const corrected = await api(`/api/admin/registros/${id}`, admin.token, 'PATCH', {
+      mode: 'active', reason: 'Test correction', minutes: 480,
+      expectedUpdatedAt: current.updatedAt?.toMillis() ?? null,
+      times: Object.fromEntries(['clockInAt', 'breakStartAt', 'breakEndAt', 'clockOutAt'].map(field => [field, current[field]?.toMillis() ?? null])),
+    });
+    assert.equal(corrected.status, 200, JSON.stringify(corrected));
+    const elapsed = current.breakStartAt.toMillis() - current.clockInAt.toMillis()
+      + current.clockOutAt.toMillis() - current.breakEndAt.toMillis();
+    assert.equal((await getDocFromServer(doc(admin.store, 'workdays', id))).get('totalWorkedMinutes'), Math.round(elapsed / 60000));
     await updateDoc(doc(admin.store, 'companies', companyId), { radiusMeters: 110, updatedAt: serverTimestamp() });
   });
+  await testOvernight({ db, companyId, api, admin, employee, check });
   await check('deactivated employees cannot register points or read another employee history', async () => {
     await assert.rejects(getDocFromServer(doc(employee.store, 'workdays', `${companyId}_someone-else_2026-10-03`)), /permission|PERMISSION/i);
     await db.doc(`users/${employee.user.uid}`).update({ active: false });

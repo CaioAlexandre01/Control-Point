@@ -1,22 +1,20 @@
-import { doc, getDoc, Timestamp } from "firebase/firestore";
+import { collection, doc, getDocFromServer, getDocsFromServer, query, where, Timestamp } from "firebase/firestore";
 import { auth, db } from "./firebase";
-import { saoPauloDate } from "./utils";
+import { randomToken } from "./utils";
+import { expectedPunch, isOpenShift } from "../../functions/src/workday-state";
 import type { EventType, Validation, Workday } from "@/types";
 
 export function nextEvent(workday?: Workday): EventType | null {
-  if (workday?.status === "day_off") return null;
-  if (!workday?.clockInAt) return "clock_in";
-  if (workday.status === "finished" || workday.clockOutAt) return null;
-  if (workday.status === "on_break" && workday.breakStartAt && !workday.breakEndAt) {
-    return "break_end";
-  }
-  if (workday.breakEndAt) return "clock_out";
-  return "break_start";
+  if (workday?.clockOutAt) return "clock_in";
+  return expectedPunch(workday);
 }
+
+const requestIds = new WeakMap<Validation, string>();
 
 interface RegisterPunchResponse {
   officialTimestampMillis: number;
   workdayDate?: string;
+  workdayId: string;
   error?: string;
 }
 
@@ -25,6 +23,7 @@ export async function registerPunch(
   companyId: string,
   type: EventType,
   validation: Validation,
+  expectedWorkdayId: string | null,
 ) {
   if (validation.company.id !== companyId) {
     throw new Error("O QR Code não pertence à sua empresa.");
@@ -36,6 +35,8 @@ export async function registerPunch(
     throw new Error("Sua sessão expirou. Faça login novamente.");
   }
 
+  const requestId = requestIds.get(validation) ?? randomToken(16);
+  requestIds.set(validation, requestId);
   const idToken = await auth.currentUser.getIdToken();
   const response = await fetch("/api/ponto/registrar", {
     method: "POST",
@@ -46,6 +47,8 @@ export async function registerPunch(
     body: JSON.stringify({
       companyId,
       type,
+      requestId,
+      expectedWorkdayId,
       qrCodeId: validation.qrCodeId,
       latitude: validation.latitude,
       longitude: validation.longitude,
@@ -71,9 +74,9 @@ export async function registerPunch(
     throw new Error("O servidor não retornou o horário oficial.");
   }
 
-  const workday = await getWorkday(userId, companyId,
-    result.workdayDate ?? saoPauloDate(new Date(result.officialTimestampMillis)));
-  if (!workday) {
+  const snapshot = await getDocFromServer(doc(db, "workdays", result.workdayId));
+  const workday = snapshot.exists() ? { ...snapshot.data(), id: snapshot.id } as Workday : undefined;
+  if (!workday || workday.userId !== userId || workday.companyId !== companyId) {
     throw new Error("O registro foi salvo, mas a jornada não pôde ser carregada.");
   }
   return {
@@ -82,20 +85,18 @@ export async function registerPunch(
   };
 }
 
-export async function getWorkday(userId: string, companyId: string, date?: string) {
-  if (!date) {
-    const response = await fetch("/api/ponto/registrar", { cache: "no-store" });
-    const result = await response.json().catch(() => null);
-    if (!response.ok || typeof result?.date !== "string") throw new Error("Não foi possível consultar o dia oficial. Tente novamente.");
-    date = result.date;
-  }
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Data da jornada inválida.");
-  const id = `${companyId}_${userId}_${date}`;
-  const snapshot = await getDoc(doc(db, "workdays", id));
-  if (!snapshot.exists()) return undefined;
-  const workday = { ...snapshot.data(), id: snapshot.id } as Workday;
-  if (workday.userId !== userId || workday.companyId !== companyId) {
-    throw new Error("A jornada encontrada não pertence ao funcionário autenticado.");
-  }
-  return workday;
+export async function getWorkday(userId: string, companyId: string) {
+  const response = await fetch("/api/ponto/registrar", { cache: "no-store" });
+  const result = await response.json().catch(() => null);
+  if (!response.ok || typeof result?.date !== "string") throw new Error("Não foi possível consultar o dia oficial. Tente novamente.");
+  const snapshot = await getDocsFromServer(query(collection(db, "workdays"),
+    where("companyId", "==", companyId), where("userId", "==", userId)));
+  const rows = snapshot.docs.map(row => ({ ...row.data(), id: row.id } as Workday));
+  const open = rows.filter(isOpenShift);
+  if (open.length > 1) throw new Error("Há mais de um turno aberto. Solicite a revisão ao administrador.");
+  if (open.length) return open[0];
+  const dayOff = rows.find(row => row.date === result.date && row.status === "day_off");
+  if (dayOff) return dayOff;
+  return rows.filter(row => row.clockOutAt)
+    .sort((a, b) => b.clockOutAt!.toMillis() - a.clockOutAt!.toMillis())[0];
 }

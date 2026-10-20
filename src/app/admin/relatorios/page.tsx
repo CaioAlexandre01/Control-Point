@@ -7,6 +7,7 @@ import { Protected } from "@/components/Protected";
 import { Alert, Button, Card, DataTable, Empty, Loading, PageHeader } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { companyUsers, companyWorkdays, exportCsv, minutesText } from "@/lib/queries";
+import { summarizeWorkdays } from "@/lib/workday-summary";
 import { saoPauloDate } from "@/lib/utils";
 import type { AppUser, Workday } from "@/types";
 
@@ -37,21 +38,7 @@ function ReportsContent() {
     () => rows?.filter((row) => mode === "daily" ? row.date === reference : row.date.startsWith(reference)) ?? [],
     [rows, reference, mode],
   );
-  const summary = useMemo(() => {
-    const result = new Map<string, { worked: number; breaks: number; days: number; daysOff: number }>();
-    filtered.forEach((row) => {
-      const value = result.get(row.userId) ?? { worked: 0, breaks: 0, days: 0, daysOff: 0 };
-      if (row.status === "day_off") {
-        value.daysOff += 1;
-      } else {
-        value.worked += row.totalWorkedMinutes || 0;
-        value.breaks += row.totalBreakMinutes || 0;
-        value.days += 1;
-      }
-      result.set(row.userId, value);
-    });
-    return [...result.entries()];
-  }, [filtered]);
+  const summary = useMemo(() => summarizeWorkdays(filtered), [filtered]);
 
   function switchMode(nextMode: "daily" | "monthly") {
     setMode(nextMode);

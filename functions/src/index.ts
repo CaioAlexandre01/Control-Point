@@ -1,5 +1,6 @@
 import { initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
+import { PunchConflict, savePunch } from "./punch-service";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 
 initializeApp();
@@ -17,6 +18,8 @@ interface PunchData {
   accuracy: number;
   clientTimestamp: number;
   userAgent: string;
+  requestId?: string;
+  expectedWorkdayId?: string | null;
 }
 
 function haversine(aLat: number, aLng: number, bLat: number, bLng: number) {
@@ -28,26 +31,6 @@ function haversine(aLat: number, aLng: number, bLat: number, bLng: number) {
     + Math.cos(radians(aLat)) * Math.cos(radians(bLat))
     * Math.sin(longitude / 2) ** 2;
   return 2 * radius * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
-}
-
-function saoPauloDate(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const part = (type: string) => parts.find((value) => value.type === type)?.value;
-  return `${part("year")}-${part("month")}-${part("day")}`;
-}
-
-function expectedEvent(workday?: FirebaseFirestore.DocumentData): EventType | null {
-  if (workday?.status === "day_off") return null;
-  if (!workday?.clockInAt) return "clock_in";
-  if (workday.status === "finished" || workday.clockOutAt) return null;
-  if (workday.status === "on_break" && workday.breakStartAt && !workday.breakEndAt) return "break_end";
-  if (workday.breakEndAt) return "clock_out";
-  return "break_start";
 }
 
 function assertNumber(value: unknown, field: string) {
@@ -87,68 +70,18 @@ export const registerPunch = onCall(
       throw new HttpsError("failed-precondition", "Localização fora do raio permitido.");
     }
 
-    const date = saoPauloDate();
-    const workdayRef = db.doc(`workdays/${data.companyId}_${request.auth.uid}_${date}`);
-    const eventRef = workdayRef.collection("events").doc();
-    const nowForCalculation = Timestamp.now();
-
-    await db.runTransaction(async (transaction) => {
-      const snapshot = await transaction.get(workdayRef);
-      const current = snapshot.exists ? snapshot.data() : undefined;
-      if (expectedEvent(current) !== data.type) {
-        throw new HttpsError("failed-precondition", "Esta não é a próxima ação da jornada.");
-      }
-
-      const timestampField: Record<EventType, string> = {
-        clock_in: "clockInAt",
-        break_start: "breakStartAt",
-        break_end: "breakEndAt",
-        clock_out: "clockOutAt",
-      };
-      const update: Record<string, unknown> = {
-        companyId: data.companyId,
-        userId: request.auth!.uid,
-        date,
-        [timestampField[data.type]]: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      };
-      if (data.type === "clock_in") Object.assign(update, {
-        status: "working",
-        createdAt: FieldValue.serverTimestamp(),
-        totalWorkedMinutes: 0,
-        totalBreakMinutes: 0,
-      });
-      if (data.type === "break_start") update.status = "on_break";
-      if (data.type === "break_end") update.status = "working";
-      if (data.type === "clock_out") {
-        update.status = "finished";
-        const clockIn = current?.clockInAt as Timestamp;
-        const breakStart = current?.breakStartAt as Timestamp | undefined;
-        const breakEnd = current?.breakEndAt as Timestamp | undefined;
-        const breakMilliseconds = breakStart && breakEnd ? breakEnd.toMillis() - breakStart.toMillis() : 0;
-        update.totalBreakMinutes = Math.max(0, Math.round(breakMilliseconds / 60_000));
-        update.totalWorkedMinutes = Math.max(0, Math.round((nowForCalculation.toMillis() - clockIn.toMillis() - breakMilliseconds) / 60_000));
-      }
-
-      transaction.set(workdayRef, update, { merge: true });
-      transaction.set(eventRef, {
-        companyId: data.companyId,
-        userId: request.auth!.uid,
-        type: data.type,
-        officialTimestamp: FieldValue.serverTimestamp(),
-        clientTimestamp: Timestamp.fromMillis(data.clientTimestamp),
-        latitude: data.latitude,
-        longitude: data.longitude,
-        accuracy: data.accuracy,
-        distanceMeters,
-        qrCodeId: data.qrCodeId,
-        userAgent: String(data.userAgent || "").slice(0, 500),
-        createdAt: FieldValue.serverTimestamp(),
-      });
-    });
-
-    const eventSnapshot = await eventRef.get();
-    const officialTimestamp = eventSnapshot.get("officialTimestamp") as Timestamp;
-    return { officialTimestampMillis: officialTimestamp.toMillis() };
+    assertNumber(data.clientTimestamp, "Horário do dispositivo");
+    if (data.requestId !== undefined && (typeof data.requestId !== "string" || !/^[a-zA-Z0-9-]{16,80}$/.test(data.requestId))) {
+      throw new HttpsError("invalid-argument", "Identificador de registro inválido.");
+    }
+    if (data.expectedWorkdayId !== undefined && data.expectedWorkdayId !== null && (typeof data.expectedWorkdayId !== "string" || data.expectedWorkdayId.includes("/"))) {
+      throw new HttpsError("invalid-argument", "Turno inválido.");
+    }
+    try {
+      return await savePunch(db, request.auth.uid, { ...data, userAgent: String(data.userAgent || "").slice(0, 500) }, distanceMeters, { FieldValue, Timestamp });
+    } catch (error) {
+      if (error instanceof PunchConflict) throw new HttpsError("failed-precondition", error.message);
+      throw error;
+    }
   },
 );

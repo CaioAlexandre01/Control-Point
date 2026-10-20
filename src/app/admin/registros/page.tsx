@@ -1,16 +1,18 @@
 "use client";
 
-import { collection, deleteField, doc, getDocs, query, serverTimestamp, Timestamp, where, writeBatch } from "firebase/firestore";
+import { collection, getDocs, query, Timestamp, where } from "firebase/firestore";
 import { Pencil, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Protected } from "@/components/Protected";
 import { Alert, Badge, Button, Card, DataTable, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
-import { deleteWorkday } from "@/lib/admin-actions";
+import { correctWorkday, deleteWorkday } from "@/lib/admin-actions";
 import { db } from "@/lib/firebase";
 import { companyUsers, companyWorkdays } from "@/lib/queries";
-import { randomToken, saoPauloDate } from "@/lib/utils";
+import { punchDateTimeInput, punchTimeText } from "@/lib/punch-time";
+import { suggestPunchDates, validateCorrectionTimes, type PunchTimeField, type PunchTimes } from "@/lib/workday-correction";
+import { saoPauloDate } from "@/lib/utils";
 import type { AppUser, Workday } from "@/types";
 
 interface AuditLog {
@@ -19,14 +21,13 @@ interface AuditLog {
   action?: string;
   reason: string;
   workdayId?: string;
+  workdayDate?: string;
   employeeName?: string;
   createdAt?: Timestamp;
 }
 
 const DAILY_TARGET_MINUTES = 8 * 60;
 
-type PunchTimeField = "clockInAt" | "breakStartAt" | "breakEndAt" | "clockOutAt";
-type PunchTimes = Record<PunchTimeField, string>;
 type CorrectionMode = "active" | "day_off";
 
 const EMPTY_PUNCH_TIMES: PunchTimes = {
@@ -36,77 +37,19 @@ const EMPTY_PUNCH_TIMES: PunchTimes = {
   clockOutAt: "",
 };
 
+const punchLabels: Record<PunchTimeField, string> = {
+  clockInAt: "Entrada", breakStartAt: "Intervalo — saída",
+  breakEndAt: "Intervalo — retorno", clockOutAt: "Saída",
+};
+
+function dateTimeLabel(value: string) {
+  const [date, time] = value.split("T");
+  return `${date.split("-").reverse().join("/")} às ${time}`;
+}
+
 function timeInputValue(value?: Timestamp) {
   if (!value) return "";
-  return new Intl.DateTimeFormat("pt-BR", {
-    timeZone: "America/Sao_Paulo",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(value.toDate());
-}
-
-function timestampFromDateAndTime(date: string, time: string) {
-  if (!time) return undefined;
-  const parsed = new Date(`${date}T${time}:00-03:00`);
-  if (Number.isNaN(parsed.getTime())) throw new Error("Informe horários válidos.");
-  return Timestamp.fromDate(parsed);
-}
-
-function validatePunchTimes(date: string, times: PunchTimes) {
-  const clockInAt = timestampFromDateAndTime(date, times.clockInAt);
-  const breakStartAt = timestampFromDateAndTime(date, times.breakStartAt);
-  const breakEndAt = timestampFromDateAndTime(date, times.breakEndAt);
-  const clockOutAt = timestampFromDateAndTime(date, times.clockOutAt);
-
-  if (!clockInAt) throw new Error("O horário de entrada é obrigatório.");
-  if (breakEndAt && !breakStartAt) throw new Error("Informe o início do intervalo antes do retorno.");
-  if (clockOutAt && breakStartAt && !breakEndAt) {
-    throw new Error("Informe o retorno do intervalo antes da saída.");
-  }
-
-  const clockInMillis = clockInAt.toMillis();
-  if (breakStartAt && breakStartAt.toMillis() <= clockInMillis) {
-    throw new Error("O intervalo deve começar depois da entrada.");
-  }
-  if (breakStartAt && breakEndAt && breakEndAt.toMillis() <= breakStartAt.toMillis()) {
-    throw new Error("O retorno deve ser posterior ao início do intervalo.");
-  }
-  if (clockOutAt && clockOutAt.toMillis() <= clockInMillis) {
-    throw new Error("A saída deve ser posterior à entrada.");
-  }
-  if (clockOutAt && breakEndAt && clockOutAt.toMillis() <= breakEndAt.toMillis()) {
-    throw new Error("A saída deve ser posterior ao retorno do intervalo.");
-  }
-
-  const breakMilliseconds = breakStartAt && breakEndAt
-    ? breakEndAt.toMillis() - breakStartAt.toMillis()
-    : 0;
-  const totalBreakMinutes = Math.max(0, Math.round(breakMilliseconds / 60_000));
-  const calculatedWorkedMinutes = clockOutAt
-    ? Math.max(0, Math.round((clockOutAt.toMillis() - clockInMillis - breakMilliseconds) / 60_000))
-    : 0;
-  const status = clockOutAt ? "finished" : breakStartAt && !breakEndAt ? "on_break" : "working";
-
-  return {
-    clockInAt,
-    breakStartAt,
-    breakEndAt,
-    clockOutAt,
-    totalBreakMinutes,
-    calculatedWorkedMinutes,
-    status,
-  } as const;
-}
-
-function timeText(value?: Timestamp) {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("pt-BR", {
-    timeZone: "America/Sao_Paulo",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(value.toDate());
+  return punchDateTimeInput(value.toDate());
 }
 
 function balanceText(workday: Workday) {
@@ -137,7 +80,6 @@ function RecordsContent() {
   const [correctionMode, setCorrectionMode] = useState<CorrectionMode>("active");
   const [punchTimes, setPunchTimes] = useState<PunchTimes>(EMPTY_PUNCH_TIMES);
   const [reason, setReason] = useState("");
-  const [minutes, setMinutes] = useState(0);
   const [error, setError] = useState("");
   const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -180,21 +122,20 @@ function RecordsContent() {
       breakEndAt: timeInputValue(workday.breakEndAt),
       clockOutAt: timeInputValue(workday.clockOutAt),
     });
-    setMinutes(workday.totalWorkedMinutes);
     setReason("");
     setError("");
   }
 
+  const correction = useMemo(() => {
+    if (!selected || correctionMode !== "active") return {};
+    try { return { value: validateCorrectionTimes(selected, punchTimes) }; }
+    catch (caught) { return { error: caught instanceof Error ? caught.message : "Datas inválidas." }; }
+  }, [selected, correctionMode, punchTimes]);
+  const suggestedTimes = useMemo(() => correction.error ? suggestPunchDates(punchTimes) : undefined, [correction.error, punchTimes]);
+
   function updatePunchTime(field: PunchTimeField, value: string) {
-    if (!selected) return;
-    const nextTimes = { ...punchTimes, [field]: value };
-    setPunchTimes(nextTimes);
-    try {
-      const calculated = validatePunchTimes(selected.date, nextTimes);
-      if (calculated.clockOutAt) setMinutes(calculated.calculatedWorkedMinutes);
-    } catch {
-      // The complete sequence is validated when the administrator saves it.
-    }
+    setPunchTimes(current => ({ ...current, [field]: value }));
+    setError("");
   }
 
   async function correct() {
@@ -202,60 +143,12 @@ function RecordsContent() {
     try {
       setSaving(true);
       setError("");
-      const corrected = correctionMode === "active" ? validatePunchTimes(selected.date, punchTimes) : undefined;
-      if (correctionMode === "active" && (!Number.isFinite(minutes) || minutes < 0)) {
-        throw new Error("O total trabalhado deve ser um número maior ou igual a zero.");
-      }
-      const auditId = randomToken(16);
-      const batch = writeBatch(db);
-      const before = {
-        clockInAt: selected.clockInAt ?? null,
-        breakStartAt: selected.breakStartAt ?? null,
-        breakEndAt: selected.breakEndAt ?? null,
-        clockOutAt: selected.clockOutAt ?? null,
-        totalWorkedMinutes: selected.totalWorkedMinutes,
-        totalBreakMinutes: selected.totalBreakMinutes,
-        status: selected.status ?? null,
-      };
-      const after = correctionMode === "day_off" ? {
-        clockInAt: null,
-        breakStartAt: null,
-        breakEndAt: null,
-        clockOutAt: null,
-        totalWorkedMinutes: 0,
-        totalBreakMinutes: 0,
-        status: "day_off",
-      } : {
-        clockInAt: corrected!.clockInAt,
-        breakStartAt: corrected!.breakStartAt ?? null,
-        breakEndAt: corrected!.breakEndAt ?? null,
-        clockOutAt: corrected!.clockOutAt ?? null,
-        totalWorkedMinutes: Math.round(minutes),
-        totalBreakMinutes: corrected!.totalBreakMinutes,
-        status: corrected!.status,
-      };
-      batch.update(doc(db, "workdays", selected.id), {
-        clockInAt: correctionMode === "day_off" ? deleteField() : corrected!.clockInAt,
-        breakStartAt: correctionMode === "day_off" ? deleteField() : corrected!.breakStartAt ?? deleteField(),
-        breakEndAt: correctionMode === "day_off" ? deleteField() : corrected!.breakEndAt ?? deleteField(),
-        clockOutAt: correctionMode === "day_off" ? deleteField() : corrected!.clockOutAt ?? deleteField(),
-        totalWorkedMinutes: correctionMode === "day_off" ? 0 : Math.round(minutes),
-        totalBreakMinutes: correctionMode === "day_off" ? 0 : corrected!.totalBreakMinutes,
-        status: correctionMode === "day_off" ? "day_off" : corrected!.status,
-        correctionAuditId: auditId,
-        updatedAt: serverTimestamp(),
+      const corrected = correctionMode === "active" ? validateCorrectionTimes(selected, punchTimes) : undefined;
+      await correctWorkday(selected.id, {
+        mode: correctionMode,
+        times: corrected?.times,
+        reason: reason.trim(), expectedUpdatedAt: selected.updatedAt?.toMillis() ?? null,
       });
-      batch.set(doc(db, "auditLogs", auditId), {
-        companyId: profile.companyId,
-        adminId: profile.uid,
-        action: "manual_workday_correction",
-        reason: reason.trim(),
-        before,
-        after,
-        workdayId: selected.id,
-        createdAt: serverTimestamp(),
-      });
-      await batch.commit();
       setSelected(undefined);
       setCorrectionMode("active");
       setPunchTimes(EMPTY_PUNCH_TIMES);
@@ -328,10 +221,10 @@ function RecordsContent() {
                 <tr key={row.id}>
                   <td>{users.find((user) => user.uid === row.userId)?.name ?? row.employeeName ?? "Funcionário excluído"}</td>
                   <td>{row.date.split("-").reverse().join("/")}</td>
-                  <td className="time-cell">{timeText(row.clockInAt)}</td>
-                  <td className="time-cell">{timeText(row.breakStartAt)}</td>
-                  <td className="time-cell">{timeText(row.breakEndAt)}</td>
-                  <td className="time-cell">{timeText(row.clockOutAt)}</td>
+                  <td className="time-cell">{punchTimeText(row.clockInAt, row.date)}</td>
+                  <td className="time-cell">{punchTimeText(row.breakStartAt, row.date)}</td>
+                  <td className="time-cell">{punchTimeText(row.breakEndAt, row.date)}</td>
+                  <td className="time-cell">{punchTimeText(row.clockOutAt, row.date)}</td>
                   <td><Badge tone={row.status === "finished" ? "success" : row.status === "on_break" ? "warning" : "neutral"}>{row.status === "day_off" ? "Folga" : row.status === "finished" ? "Concluído" : row.status === "on_break" ? "Intervalo" : "Ativo"}</Badge></td>
                   <td className={row.status === "finished" && row.totalWorkedMinutes >= DAILY_TARGET_MINUTES ? "balance positive" : row.status === "finished" ? "balance negative" : "balance"}>
                     {balanceText(row)}
@@ -368,7 +261,7 @@ function RecordsContent() {
                   <td>{audit.createdAt?.toDate().toLocaleString("pt-BR") ?? "—"}</td>
                   <td>{users.find((user) => user.uid === audit.adminId)?.name ?? "—"}</td>
                   <td>{auditActionText(audit.action)}</td>
-                  <td>{audit.workdayId ? audit.workdayId.split("_").at(-1)?.split("-").reverse().join("/") : audit.employeeName ?? "—"}</td>
+                  <td>{(audit.workdayDate || audit.workdayId) ? (audit.workdayDate ?? audit.workdayId!.split("_").at(-1))?.split("-").reverse().join("/") : audit.employeeName ?? "—"}</td>
                   <td>{audit.reason}</td>
                 </tr>
               ))}
@@ -394,14 +287,32 @@ function RecordsContent() {
         </label>
         {correctionMode === "active" ? (
           <>
+            <p className="table-note">Datas e horários em America/Sao_Paulo. A data de abertura original será mantida.</p>
             <div className="form-grid punch-time-fields">
-              <Field label="Entrada" type="time" value={punchTimes.clockInAt} onChange={(event) => updatePunchTime("clockInAt", event.target.value)} />
-              <Field label="Intervalo — saída" type="time" value={punchTimes.breakStartAt} onChange={(event) => updatePunchTime("breakStartAt", event.target.value)} />
-              <Field label="Intervalo — retorno" type="time" value={punchTimes.breakEndAt} onChange={(event) => updatePunchTime("breakEndAt", event.target.value)} />
-              <Field label="Saída" type="time" value={punchTimes.clockOutAt} onChange={(event) => updatePunchTime("clockOutAt", event.target.value)} />
+              <Field label="Entrada" type="datetime-local" value={punchTimes.clockInAt} onChange={(event) => updatePunchTime("clockInAt", event.target.value)} />
+              <Field label="Intervalo — saída" type="datetime-local" value={punchTimes.breakStartAt} onChange={(event) => updatePunchTime("breakStartAt", event.target.value)} />
+              <Field label="Intervalo — retorno" type="datetime-local" value={punchTimes.breakEndAt} onChange={(event) => updatePunchTime("breakEndAt", event.target.value)} />
+              <Field label="Saída" type="datetime-local" value={punchTimes.clockOutAt} onChange={(event) => updatePunchTime("clockOutAt", event.target.value)} />
             </div>
-            <Field label="Total trabalhado (minutos)" type="number" min={0} step={1} value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} />
-            <p className="table-note">O total é recalculado ao alterar uma sequência completa e pode ser ajustado manualmente.</p>
+            {correction.error && <Alert tone="error">{correction.error}</Alert>}
+            {suggestedTimes && (
+              <div className="stack">
+                <Alert>
+                  Há horários anteriores à batida precedente. Se houve virada de dia, confira as datas abaixo;
+                  se foi um erro de digitação, corrija os campos. Nenhuma data foi alterada automaticamente.
+                  <ul>
+                    {(Object.keys(punchLabels) as PunchTimeField[]).filter(field => suggestedTimes[field] !== punchTimes[field]).map(field => (
+                      <li key={field}>{punchLabels[field]}: {dateTimeLabel(punchTimes[field])} → <strong>{dateTimeLabel(suggestedTimes[field])}</strong></li>
+                    ))}
+                  </ul>
+                </Alert>
+                <Button type="button" className="secondary" onClick={() => { setPunchTimes(suggestedTimes); setError(""); }}>
+                  Confirmar datas sugeridas
+                </Button>
+              </div>
+            )}
+            <Field label="Total trabalhado (minutos)" type="number" value={correction.value?.totalWorkedMinutes ?? ""} readOnly />
+            <p className="table-note">Calculado pelas batidas. Em jornadas incompletas, soma apenas os períodos trabalhados já concluídos.</p>
           </>
         ) : (
           <Alert>Os horários serão removidos e esta jornada será marcada como folga.</Alert>
@@ -412,7 +323,7 @@ function RecordsContent() {
         </label>
         <div className="modal-actions">
           <Button className="secondary" onClick={() => setSelected(undefined)}>Cancelar</Button>
-          <Button loading={saving} disabled={reason.trim().length < 5 || correctionMode === "active" && (!Number.isFinite(minutes) || minutes < 0)} onClick={correct}>Salvar alterações</Button>
+          <Button loading={saving} disabled={reason.trim().length < 5 || correctionMode === "active" && !correction.value} onClick={correct}>Salvar alterações</Button>
         </div>
       </Modal>
       <Modal
