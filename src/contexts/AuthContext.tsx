@@ -1,6 +1,6 @@
 "use client";
 
-import { browserLocalPersistence, onAuthStateChanged, setPersistence, signOut, type User } from "firebase/auth";
+import { browserLocalPersistence, onIdTokenChanged, setPersistence, signOut, type User } from "firebase/auth";
 import { doc, onSnapshot } from "firebase/firestore";
 import { createContext, useContext, useEffect, useState } from "react";
 import { auth, db } from "@/lib/firebase";
@@ -18,12 +18,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let active = true;
     let revision = 0;
+    let profileUserId: string | undefined;
+    let profileFailed = false;
     let unsubscribe = () => {};
     let unsubscribeProfile = () => {};
 
     setPersistence(auth, browserLocalPersistence).then(() => {
       if (!active) return;
-      unsubscribe = onAuthStateChanged(auth, (user) => {
+      unsubscribe = onIdTokenChanged(auth, (user) => {
+        // Signing in again with the same UID does not emit onAuthStateChanged.
+        // Retry a terminated profile listener, without interrupting healthy sessions
+        // when Firebase renews their tokens in the background.
+        if (user && user.uid === profileUserId && !profileFailed) return;
+        profileUserId = user?.uid;
+        profileFailed = false;
         const currentRevision = ++revision;
         const isCurrent = () => active && currentRevision === revision;
         unsubscribeProfile();
@@ -35,8 +43,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         // Account creation signs in before the profile transaction completes.
         // Keep listening so a missing profile can become ready without a reload.
-        unsubscribeProfile = onSnapshot(doc(db, "users", user.uid), (snapshot) => {
+        unsubscribeProfile = onSnapshot(doc(db, "users", user.uid), { includeMetadataChanges: true }, (snapshot) => {
           if (!isCurrent()) return;
+          // An empty local cache does not prove that the profile is absent.
+          if (!snapshot.exists() && snapshot.metadata.fromCache) return;
           setState({
             firebaseUser: user,
             profile: snapshot.exists() ? { ...snapshot.data(), uid: snapshot.id } as AppUser : null,
@@ -45,6 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           });
         }, () => {
           if (isCurrent()) {
+            profileFailed = true;
             setState({ firebaseUser: user, profile: null, loading: false, authError: "Não foi possível carregar seu perfil. Tente entrar novamente." });
           }
         });

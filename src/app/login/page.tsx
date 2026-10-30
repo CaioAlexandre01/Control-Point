@@ -2,7 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDocFromServer } from "firebase/firestore";
 import { Clock3, Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -56,7 +56,7 @@ export default function Login() {
         values.email.trim().toLowerCase(),
         values.password,
       );
-      const snapshot = await getDoc(doc(db, "users", credential.user.uid));
+      const snapshot = await getDocFromServer(doc(db, "users", credential.user.uid));
       if (!snapshot.exists()) {
         await signOut(auth);
         throw new Error("Perfil não encontrado. Procure o administrador.");

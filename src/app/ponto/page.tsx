@@ -91,6 +91,8 @@ export default function Ponto() {
 
 function PontoContent() {
   const { firebaseUser, profile } = useAuth();
+  const userId = firebaseUser?.uid;
+  const companyId = profile?.companyId;
   const [workday, setWorkday] = useState<Workday>();
   const [loadingWorkday, setLoadingWorkday] = useState(true);
   const punchInFlight = useRef(false);
@@ -121,11 +123,11 @@ function PontoContent() {
   const next = workdayLoadFailed || loadingWorkday ? null : nextEvent(workday);
 
   const load = useCallback(async () => {
-    if (!firebaseUser || !profile) return;
+    if (!userId || !companyId) return;
     setLoadingWorkday(true);
     setWorkdayLoadFailed(false);
     try {
-      setWorkday(await getWorkday(firebaseUser.uid, profile.companyId));
+      setWorkday(await getWorkday(userId, companyId));
     } catch (caught) {
       setWorkday(undefined);
       setWorkdayLoadFailed(true);
@@ -136,7 +138,7 @@ function PontoContent() {
     } finally {
       setLoadingWorkday(false);
     }
-  }, [firebaseUser, profile]);
+  }, [userId, companyId]);
 
   const stopCamera = useCallback(async () => {
     const instance = scanner.current;
@@ -163,6 +165,25 @@ function PontoContent() {
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => { void stopCamera(); }, [stopCamera]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible" || punchInFlight.current
+        || permissionFlowActive.current || scanning || validatingQr || validation || requiredLocation) return;
+      void load();
+    };
+    // Returning to a suspended tab must consult the current official day/shift.
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("online", refresh);
+    // A day off disables every punch action. Recheck it across midnight even
+    // when the page stays visible; getWorkday uses the server's São Paulo date.
+    const timer = workday?.status === "day_off" ? window.setInterval(refresh, 60_000) : undefined;
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("online", refresh);
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [load, workday?.status, scanning, validatingQr, validation, requiredLocation]);
 
   async function prepareRequiredLocation() {
     setIsRequestingLocation(true);

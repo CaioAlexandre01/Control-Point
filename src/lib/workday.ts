@@ -31,32 +31,40 @@ export async function registerPunch(
   if (Date.now() - validation.validatedAt > 120_000) {
     throw new Error("A validação expirou. Leia o QR Code novamente.");
   }
-  if (!auth.currentUser || auth.currentUser.uid !== userId) {
+  const user = auth.currentUser;
+  if (!user || user.uid !== userId) {
     throw new Error("Sua sessão expirou. Faça login novamente.");
   }
 
   const requestId = requestIds.get(validation) ?? randomToken(16);
   requestIds.set(validation, requestId);
-  const idToken = await auth.currentUser.getIdToken();
-  const response = await fetch("/api/ponto/registrar", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${idToken}`,
-    },
-    body: JSON.stringify({
-      companyId,
-      type,
-      requestId,
-      expectedWorkdayId,
-      qrCodeId: validation.qrCodeId,
-      latitude: validation.latitude,
-      longitude: validation.longitude,
-      accuracy: validation.accuracy,
-      clientTimestamp: Date.now(),
-      userAgent: navigator.userAgent,
-    }),
+  const body = JSON.stringify({
+    companyId,
+    type,
+    requestId,
+    expectedWorkdayId,
+    qrCodeId: validation.qrCodeId,
+    latitude: validation.latitude,
+    longitude: validation.longitude,
+    accuracy: validation.accuracy,
+    clientTimestamp: Date.now(),
+    userAgent: navigator.userAgent,
   });
+  const send = async (forceRefresh: boolean) => {
+    const idToken = await user.getIdToken(forceRefresh);
+    if (auth.currentUser?.uid !== user.uid) {
+      throw new Error("Sua sessão mudou. Faça login novamente.");
+    }
+    return fetch("/api/ponto/registrar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+      body,
+    });
+  };
+  let response = await send(false);
+  // A suspended tab or incorrect device clock can leave a cached token expired.
+  // A 401 occurs before any write; retry once with the same idempotency key.
+  if (response.status === 401 && auth.currentUser?.uid === user.uid) response = await send(true);
 
   let result: RegisterPunchResponse;
   try {
@@ -65,9 +73,6 @@ export async function registerPunch(
     throw new Error("O servidor retornou uma resposta inválida.");
   }
   if (!response.ok) {
-    if (response.status === 401) {
-      await auth.currentUser?.getIdToken(true).catch(() => undefined);
-    }
     throw new Error(result.error || "Não foi possível registrar o ponto.");
   }
   if (!Number.isFinite(result.officialTimestampMillis)) {

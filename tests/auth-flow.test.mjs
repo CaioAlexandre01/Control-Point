@@ -23,7 +23,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 async function provider() {
-  let state, listener, cleanup;
+  let state, listener, tokenListener, cleanup;
   const reads = [];
   const persistence = [];
   const components = load('src/contexts/AuthContext.tsx', {
@@ -38,11 +38,13 @@ async function provider() {
       browserLocalPersistence: 'local',
       setPersistence: async (_, mode) => { persistence.push(mode); },
       onAuthStateChanged: (_, callback) => { listener = callback; return () => {}; },
+      onIdTokenChanged: (_, callback) => { listener = callback; tokenListener = callback; return () => {}; },
       signOut: async () => { await listener(null); },
     },
     'firebase/firestore': {
       doc: (_, collection, uid) => uid,
-      onSnapshot: (uid, resolve, reject) => {
+      onSnapshot: (uid, ...args) => {
+        const [resolve, reject] = typeof args[0] === 'function' ? args : args.slice(1);
         const read = { uid, resolve, reject, unsubscribed: false };
         reads.push(read);
         return () => { read.unsubscribed = true; };
@@ -51,9 +53,9 @@ async function provider() {
   });
   const tree = components.AuthProvider({ children: null });
   await Promise.resolve();
-  return { state: () => state, emit: user => listener(user), reads, cleanup, logout: tree.props.value.logout, persistence };
+  return { state: () => state, emit: user => listener(user), emitToken: user => tokenListener?.(user), reads, cleanup, logout: tree.props.value.logout, persistence };
 }
-const snapshot = (uid, role = 'employee') => ({ exists: () => true, id: uid, data: () => ({ active: true, role }) });
+const snapshot = (uid, role = 'employee') => ({ exists: () => true, metadata: { fromCache: false }, id: uid, data: () => ({ active: true, role }) });
 function destination(state, component = 'protected', isSubmitting = false, role, setupStatus = 'ready') {
   const routes = [];
   const mocks = {
@@ -105,10 +107,36 @@ test('restored session waits for Firebase and profile, keeping local persistence
   assert.deepEqual(destination(app.state(), 'login'), ['/ponto']);
 });
 
+test('a cached missing profile does not bounce a restored session back to login', async () => {
+  const app = await provider();
+  await app.emit({ uid: 'cached' });
+  app.reads[0].resolve({ exists: () => false, metadata: { fromCache: true } });
+  assert.equal(app.state().loading, true);
+  assert.deepEqual(destination(app.state()), []);
+  app.reads[0].resolve(snapshot('cached'));
+  assert.equal(app.state().profile.uid, 'cached');
+  assert.equal(app.state().authError, '');
+});
+
+test('signing in again with the same identity restarts a failed profile listener', async () => {
+  const app = await provider();
+  await app.emit({ uid: 'retry' });
+  app.reads[0].reject(new Error('permission-denied'));
+  await app.emitToken({ uid: 'retry' });
+  assert.equal(app.state().loading, true);
+  assert.equal(app.reads.length, 2);
+  app.reads[1].resolve(snapshot('retry'));
+  assert.deepEqual(destination(app.state(), 'login'), ['/ponto']);
+  // Routine token renewal must not unmount a working punch screen.
+  await app.emitToken({ uid: 'retry' });
+  assert.equal(app.reads.length, 2);
+  assert.equal(app.state().loading, false);
+});
+
 test('profile created after signup updates the session without another login', async () => {
   const app = await provider();
   await app.emit({ uid: 'new' });
-  app.reads[0].resolve({ exists: () => false });
+  app.reads[0].resolve({ exists: () => false, metadata: { fromCache: false } });
   assert.equal(app.state().profile, null);
   app.reads[0].resolve(snapshot('new'));
   assert.equal(app.state().profile.uid, 'new');
@@ -156,7 +184,7 @@ test('failed or missing profiles end loading and expose an error without allowin
   for (const missing of [true, false]) {
     const app = await provider();
     const pending = app.emit({ uid: 'invalid' });
-    if (missing) app.reads[0].resolve({ exists: () => false });
+    if (missing) app.reads[0].resolve({ exists: () => false, metadata: { fromCache: false } });
     else app.reads[0].reject(new Error('offline'));
     await pending;
     assert.equal(app.state().loading, false);

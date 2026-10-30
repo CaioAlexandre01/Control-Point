@@ -173,7 +173,96 @@ test('QR photo plus geolocation records the full workday in the mobile UI', asyn
     await page.getByRole('dialog').getByRole('button', { name: 'Confirmar', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
   }
-  await expect(page.getByRole('heading', { name: 'Jornada concluída', exact: true })).toBeVisible();
+  // A completed shift permits a new entry; the four saved punches remain visible.
+  await expect(page.getByRole('heading', { name: 'entrada', exact: true })).toBeVisible();
+  await expect(page.locator('.work-state')).toHaveText('Concluído');
   await expect(page.locator('.punch-mini-table .registered')).toHaveCount(4);
   await page.screenshot({ path: 'test-results/workday-mobile.png', fullPage: true });
+});
+
+test('login reports invalid credentials then enters without reloading the document', async ({ page }) => {
+  const email = uniqueEmail();
+  const user = await auth.createUser({ email, password });
+  await db.doc(`users/${user.uid}`).set({ name: 'Login QA', email, role: 'employee', active: true, companyId });
+  await page.goto('/login');
+  await page.getByLabel('E-mail', { exact: true }).fill(email);
+  await page.getByLabel('Senha', { exact: true }).fill('incorrect-password');
+  await page.getByRole('button', { name: 'Entrar', exact: true }).click();
+  await expect(page.locator('.alert.error')).toBeVisible();
+  await expect(page).toHaveURL(/\/login$/);
+  let documentRequests = 0;
+  page.on('request', request => { if (request.resourceType() === 'document') documentRequests++; });
+  await page.getByLabel('Senha', { exact: true }).fill(password);
+  await page.getByRole('button', { name: 'Entrar', exact: true }).click();
+  await expect(page).toHaveURL(/\/ponto$/);
+  await expect(page.getByRole('heading', { name: 'entrada', exact: true })).toBeVisible();
+  expect(documentRequests).toBe(0);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'entrada', exact: true })).toBeVisible();
+});
+
+test('an overnight exit survives session renewal and stays on the original shift', async ({ page, context, request }) => {
+  await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: -23.5, longitude: -46.6, accuracy: 5 });
+  const email = uniqueEmail();
+  const user = await auth.createUser({ email, password });
+  await db.doc(`users/${user.uid}`).set({ name: 'Overnight QA', email, role: 'employee', active: true, companyId });
+  const { date: today } = await (await request.get('/api/ponto/registrar')).json();
+  const yesterday = new Date(Date.parse(`${today}T12:00:00Z`) - 86400000).toISOString().slice(0, 10);
+  const ref = db.collection('workdays').doc();
+  await ref.set({
+    userId: user.uid, companyId, date: yesterday, status: 'working',
+    clockInAt: Timestamp.fromDate(new Date(`${yesterday}T18:00:00-03:00`)),
+    breakStartAt: Timestamp.fromDate(new Date(`${yesterday}T22:00:00-03:00`)),
+    breakEndAt: Timestamp.fromDate(new Date(`${yesterday}T23:00:00-03:00`)),
+  });
+  await login(page, email);
+  await expect(page.getByRole('heading', { name: 'saída', exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'saída', exact: true })).toBeVisible();
+  const requests = [];
+  await page.route('**/api/ponto/registrar', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    requests.push(route.request().postDataJSON());
+    if (requests.length === 1) {
+      return route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Sessão expirada.' }) });
+    }
+    return route.continue();
+  });
+  await page.getByRole('button', { name: 'Ler por foto' }).click();
+  await expect(page.getByRole('button', { name: 'Abrir foto', exact: true })).toBeEnabled();
+  const buffer = await QRCode.toBuffer(`P:${qrCodeId.toUpperCase()}`, { width: 640, margin: 4 });
+  await page.locator('input[type=file]').setInputFiles({ name: 'qrcode.png', mimeType: 'image/png', buffer });
+  await expect(page.getByRole('dialog', { name: 'Confirmar saída?' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirmar', exact: true }).click();
+  await expect(page.getByText(/Registro confirmado às/)).toBeVisible();
+  await expect(page.locator('.punch-mini-table .registered')).toHaveCount(4);
+  expect(requests).toHaveLength(2);
+  expect(requests[1]).toEqual(requests[0]);
+  expect(requests[0].expectedWorkdayId).toBe(ref.id);
+  const saved = (await ref.get()).data();
+  expect(saved.date).toBe(yesterday);
+  expect(saved.status).toBe('finished');
+  expect(saved.clockOutAt.toMillis()).toBeGreaterThan(saved.breakEndAt.toMillis());
+  expect((await ref.collection('events').get()).size).toBe(1);
+  expect((await db.collection('workdays').where('userId', '==', user.uid).get()).size).toBe(1);
+});
+
+test('a page left open on a day off unlocks after the official midnight', async ({ page }) => {
+  const email = uniqueEmail();
+  const user = await auth.createUser({ email, password });
+  await db.doc(`users/${user.uid}`).set({ name: 'Midnight QA', email, role: 'employee', active: true, companyId });
+  await db.collection('workdays').doc().set({ userId: user.uid, companyId, date: '2026-10-30', status: 'day_off' });
+  let date = '2026-10-30';
+  await page.route('**/api/ponto/registrar', route => route.request().method() === 'GET'
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ date }) })
+    : route.continue());
+  await page.clock.install({ time: new Date('2040-01-01T00:00:00Z') });
+  await login(page, email);
+  await expect(page.getByRole('heading', { name: 'Folga programada', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ler por foto' })).toBeDisabled();
+  date = '2026-10-31';
+  await page.clock.fastForward(61000);
+  await expect(page.getByRole('heading', { name: 'entrada', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ler por foto' })).toBeEnabled();
 });
